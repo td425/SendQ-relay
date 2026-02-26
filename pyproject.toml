@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sendq-mta"
+version = "1.0.0"
+description = "Enterprise Mail Transfer Agent — high-performance SMTP server with relay, DKIM/SPF/DMARC, persistent queue, and rate limiting."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "SendQ-MTA Team" },
+]
+keywords = ["smtp", "mta", "mail", "email", "relay", "dkim", "spf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email :: Mail Transport Agents",
+]
+
+dependencies = [
+    "aiosmtpd>=1.4.6",
+    "aiosmtplib>=3.0.0",
+    "pyyaml>=6.0",
+    "click>=8.1",
+    "dnspython>=2.4",
+    "argon2-cffi>=23.1",
+]
+
+[project.optional-dependencies]
+dkim = ["dkimpy>=1.1.0"]
+spf = ["pyspf>=2.0.14"]
+bcrypt = ["bcrypt>=4.0"]
+crypto = ["cryptography>=41.0"]
+full = [
+    "dkimpy>=1.1.0",
+    "pyspf>=2.0.14",
+    "bcrypt>=4.0",
+    "cryptography>=41.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "mypy>=1.5",
+    "ruff>=0.1",
+]
+
+[project.scripts]
+sendq-mta = "sendq_mta.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/sendq-mta/sendq-mta"
+Documentation = "https://sendq-mta.readthedocs.io"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sendq_mta"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

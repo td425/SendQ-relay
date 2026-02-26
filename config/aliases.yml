@@ -1,0 +1,15 @@
+# ============================================================================
+# SendQ-MTA — Email Aliases
+# ============================================================================
+# Format:
+#   aliases:
+#     postmaster@example.com:
+#       - admin@example.com
+#     abuse@example.com:
+#       - admin@example.com
+#     info@example.com:
+#       - user1@example.com
+#       - user2@example.com
+# ============================================================================
+
+aliases: {}

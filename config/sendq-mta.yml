@@ -1,0 +1,299 @@
+# ============================================================================
+# SendQ-MTA — Enterprise Mail Transfer Agent Configuration
+# ============================================================================
+# Location: /etc/sendq-mta/sendq-mta.yml
+# Reload: sendq-mta --reload-config  OR  systemctl reload sendq-mta
+# Validate: sendq-mta --validate-config
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# General Server Settings
+# --------------------------------------------------------------------------
+server:
+  hostname: "mail.example.com"            # FQDN of this mail server
+  banner: "SendQ-MTA Enterprise ESMTP"    # SMTP banner greeting
+  pid_file: "/var/run/sendq-mta/sendq-mta.pid"
+  data_dir: "/var/lib/sendq-mta"
+  run_as_user: "sendq"
+  run_as_group: "sendq"
+  max_message_size: 52428800              # 50 MB max message size (bytes)
+
+# --------------------------------------------------------------------------
+# SMTP Listener Configuration
+# --------------------------------------------------------------------------
+listeners:
+  # Standard SMTP (port 25) — for receiving mail from other MTAs
+  - name: "smtp"
+    address: "0.0.0.0"
+    port: 25
+    protocol: "smtp"
+    tls_mode: "starttls"                  # none | starttls | implicit
+    max_connections: 1000
+    timeout: 300                          # seconds
+    require_auth: false
+
+  # Submission (port 587) — for authenticated clients (STARTTLS)
+  - name: "submission"
+    address: "0.0.0.0"
+    port: 587
+    protocol: "smtp"
+    tls_mode: "starttls"
+    max_connections: 500
+    timeout: 300
+    require_auth: true
+
+  # SMTPS (port 465) — for authenticated clients (implicit TLS)
+  - name: "smtps"
+    address: "0.0.0.0"
+    port: 465
+    protocol: "smtp"
+    tls_mode: "implicit"
+    max_connections: 500
+    timeout: 300
+    require_auth: true
+
+# --------------------------------------------------------------------------
+# TLS / SSL Configuration
+# --------------------------------------------------------------------------
+tls:
+  cert_file: "/etc/sendq-mta/certs/fullchain.pem"
+  key_file: "/etc/sendq-mta/certs/privkey.pem"
+  ca_file: "/etc/sendq-mta/certs/ca-bundle.pem"
+  min_version: "TLSv1.2"                  # TLSv1.2 | TLSv1.3
+  ciphers: "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20"
+  prefer_server_ciphers: true
+
+# --------------------------------------------------------------------------
+# SMTP Relay / Smarthost Configuration
+# --------------------------------------------------------------------------
+# Configure upstream SMTP relay for outbound delivery.
+# Leave empty to deliver directly via DNS MX lookup.
+# --------------------------------------------------------------------------
+relay:
+  enabled: false                           # true = relay through smarthost
+  host: ""                                 # e.g. "smtp.mailprovider.com"
+  port: 587                                # 25 | 465 | 587 | 2525
+  username: ""                             # SMTP AUTH username
+  password: ""                             # SMTP AUTH password
+  auth_method: "auto"                      # auto | plain | login | cram-md5
+  tls_mode: "starttls"                     # none | starttls | implicit
+  tls_verify: true                         # verify relay TLS certificate
+  connection_pool_size: 20                 # persistent connections to relay
+  max_connections: 50                      # max simultaneous connections
+
+  # Failover relays (used if primary is unreachable)
+  failover:
+    - host: ""
+      port: 587
+      username: ""
+      password: ""
+      tls_mode: "starttls"
+
+# --------------------------------------------------------------------------
+# Queue Configuration
+# --------------------------------------------------------------------------
+queue:
+  directory: "/var/spool/sendq-mta/queue"
+  deferred_directory: "/var/spool/sendq-mta/deferred"
+  failed_directory: "/var/spool/sendq-mta/failed"
+  max_queue_size: 1000000                  # max messages in queue
+  workers: 16                              # concurrent delivery workers
+  batch_size: 100                          # messages per delivery batch
+  retry_intervals:                         # backoff schedule (seconds)
+    - 60                                   # 1 min
+    - 300                                  # 5 min
+    - 900                                  # 15 min
+    - 1800                                 # 30 min
+    - 3600                                 # 1 hour
+    - 7200                                 # 2 hours
+    - 14400                                # 4 hours
+    - 28800                                # 8 hours
+    - 43200                                # 12 hours
+  max_retries: 30                          # max delivery attempts
+  max_age: 432000                          # 5 days — bounce after this (sec)
+  bounce_notify: true                      # send DSN on permanent failure
+  flush_interval: 30                       # seconds between queue scans
+
+# --------------------------------------------------------------------------
+# Delivery Settings
+# --------------------------------------------------------------------------
+delivery:
+  # Direct delivery via DNS MX (when relay is disabled)
+  dns_timeout: 10                          # DNS lookup timeout (seconds)
+  dns_servers: []                          # custom DNS; empty = system default
+  connect_timeout: 30                      # TCP connect timeout (seconds)
+  read_timeout: 120                        # read timeout (seconds)
+  write_timeout: 60                        # write timeout (seconds)
+  ehlo_timeout: 30
+
+  # Connection pooling for outbound delivery
+  connection_pool:
+    enabled: true
+    size_per_domain: 10                    # connections per destination domain
+    max_total: 500                         # total pooled connections
+    idle_timeout: 300                      # close idle connections (seconds)
+    max_lifetime: 1800                     # max connection age (seconds)
+
+# --------------------------------------------------------------------------
+# Rate Limiting
+# --------------------------------------------------------------------------
+rate_limiting:
+  enabled: true
+
+  # Inbound rate limits
+  inbound:
+    max_connections_per_ip: 50
+    max_messages_per_ip_per_minute: 100
+    max_recipients_per_message: 500
+    max_errors_per_ip: 10                  # ban IP after N errors
+    ban_duration: 3600                     # ban duration (seconds)
+
+  # Outbound rate limits
+  outbound:
+    max_messages_per_domain_per_minute: 200
+    max_messages_per_second: 500
+    max_concurrent_deliveries: 100
+
+  # Per-user rate limits
+  per_user:
+    max_messages_per_hour: 500
+    max_recipients_per_hour: 2000
+
+# --------------------------------------------------------------------------
+# Authentication — User Database
+# --------------------------------------------------------------------------
+auth:
+  backend: "internal"                      # internal | ldap | mysql | pgsql
+  password_hash: "argon2"                  # argon2 | bcrypt | sha512
+  users_file: "/etc/sendq-mta/users.yml"  # for 'internal' backend
+  min_password_length: 12
+  require_auth_for_relay: true
+
+  # LDAP settings (when backend = "ldap")
+  ldap:
+    url: "ldap://ldap.example.com:389"
+    bind_dn: "cn=mailservice,dc=example,dc=com"
+    bind_password: ""
+    base_dn: "ou=users,dc=example,dc=com"
+    user_filter: "(mail={user})"
+    tls: true
+
+  # MySQL settings (when backend = "mysql")
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    database: "sendq_mta"
+    username: "sendq"
+    password: ""
+    users_table: "users"
+
+  # PostgreSQL settings (when backend = "pgsql")
+  pgsql:
+    host: "127.0.0.1"
+    port: 5432
+    database: "sendq_mta"
+    username: "sendq"
+    password: ""
+    users_table: "users"
+
+# --------------------------------------------------------------------------
+# Domain Management
+# --------------------------------------------------------------------------
+domains:
+  local_domains:
+    - "example.com"
+    - "mail.example.com"
+  relay_domains: []                        # domains we relay for
+  blocked_domains: []                      # reject mail to/from these
+  alias_file: "/etc/sendq-mta/aliases.yml"
+
+# --------------------------------------------------------------------------
+# DKIM — DomainKeys Identified Mail
+# --------------------------------------------------------------------------
+dkim:
+  enabled: false
+  selector: "sendq"
+  key_file: "/etc/sendq-mta/dkim/private.key"
+  signing_domains:
+    - "example.com"
+  headers_to_sign:
+    - "From"
+    - "To"
+    - "Subject"
+    - "Date"
+    - "Message-ID"
+    - "MIME-Version"
+    - "Content-Type"
+  algorithm: "rsa-sha256"                  # rsa-sha256 | ed25519-sha256
+  key_bits: 2048
+
+# --------------------------------------------------------------------------
+# SPF — Sender Policy Framework
+# --------------------------------------------------------------------------
+spf:
+  enabled: true
+  hard_fail_action: "reject"               # reject | quarantine | tag
+  soft_fail_action: "tag"                  # reject | quarantine | tag
+  neutral_action: "accept"
+
+# --------------------------------------------------------------------------
+# DMARC — Domain-based Message Authentication
+# --------------------------------------------------------------------------
+dmarc:
+  enabled: true
+  reject_action: "reject"                  # reject | quarantine | tag
+  quarantine_action: "quarantine"
+  report_email: "dmarc-reports@example.com"
+
+# --------------------------------------------------------------------------
+# Content Filtering
+# --------------------------------------------------------------------------
+content_filter:
+  enabled: false
+  max_scan_size: 10485760                  # 10 MB — skip scan if larger
+  spam_check: false
+  virus_check: false
+
+  # External milter (e.g., rspamd, SpamAssassin, ClamAV)
+  milters:
+    - name: "rspamd"
+      address: "inet:127.0.0.1:11332"
+      timeout: 30
+      enabled: false
+
+# --------------------------------------------------------------------------
+# Logging
+# --------------------------------------------------------------------------
+logging:
+  level: "info"                            # debug | info | warning | error
+  file: "/var/log/sendq-mta/sendq-mta.log"
+  max_size: "100M"                         # rotate at this size
+  max_files: 30                            # keep N rotated files
+  format: "json"                           # json | text
+  log_mail_body: false                     # NEVER enable in production
+  syslog:
+    enabled: false
+    facility: "mail"
+
+# --------------------------------------------------------------------------
+# Metrics & Monitoring
+# --------------------------------------------------------------------------
+metrics:
+  enabled: true
+  prometheus:
+    enabled: true
+    address: "127.0.0.1"
+    port: 9225
+  stats_interval: 60                       # log stats every N seconds
+
+# --------------------------------------------------------------------------
+# Management API (internal use by CLI)
+# --------------------------------------------------------------------------
+management_api:
+  enabled: true
+  socket: "/var/run/sendq-mta/mgmt.sock"  # UNIX socket for CLI
+  http:
+    enabled: false
+    address: "127.0.0.1"
+    port: 8225
+    api_key: ""                            # required if HTTP API enabled

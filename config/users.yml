@@ -1,0 +1,11 @@
+# ============================================================================
+# SendQ-MTA — User Database (Internal Backend)
+# ============================================================================
+# Location: /etc/sendq-mta/users.yml
+# Managed via CLI: sendq-mta add-user / edit-user / delete-user / change-pass
+# ============================================================================
+# WARNING: Do not edit password_hash fields manually.
+# Use `sendq-mta change-pass <username>` to change passwords.
+# ============================================================================
+
+users: {}
