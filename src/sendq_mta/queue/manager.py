@@ -94,6 +94,7 @@ class QueueManager:
         self._workers: list[asyncio.Task] = []
         self._delivery_queue: asyncio.Queue[QueueMessage] = asyncio.Queue()
         self._running = False
+        self._known_ids: set[str] = set()
         self._stats = {
             "enqueued": 0,
             "delivered": 0,
@@ -129,6 +130,7 @@ class QueueManager:
         # Write to disk
         await self._write_to_disk(msg, self._queue_dir)
         self._stats["enqueued"] += 1
+        self._known_ids.add(msg_id)
 
         # Push to in-memory delivery queue
         await self._delivery_queue.put(msg)
@@ -243,6 +245,7 @@ class QueueManager:
                 await self._move_to_deferred(msg, str(exc))
             finally:
                 self._stats["active"] -= 1
+                self._known_ids.discard(msg.msg_id)
                 self._delivery_queue.task_done()
 
         logger.info("Delivery worker %d stopped", worker_id)
@@ -289,6 +292,7 @@ class QueueManager:
                     # Move back to active queue
                     await self._remove_from_disk(msg.msg_id, self._deferred_dir)
                     await self._write_to_disk(msg, self._queue_dir)
+                    self._known_ids.add(msg.msg_id)
                     await self._delivery_queue.put(msg)
                     logger.info("Re-queued deferred message %s", msg.msg_id)
             except Exception:
@@ -316,6 +320,7 @@ class QueueManager:
                     msg = await loop.run_in_executor(
                         None, QueueMessage.from_disk, meta_path, data_path
                     )
+                    self._known_ids.add(msg_id)
                     await self._delivery_queue.put(msg)
             except Exception:
                 logger.exception("Error loading queued message %s", msg_id)
@@ -404,12 +409,51 @@ class QueueManager:
                     msg.status = "queued"
                     await self._remove_from_disk(msg.msg_id, self._deferred_dir)
                     await self._write_to_disk(msg, self._queue_dir)
+                    self._known_ids.add(msg.msg_id)
                     await self._delivery_queue.put(msg)
                     count += 1
             except Exception:
                 logger.exception("Error flushing message %s", msg_id)
 
         logger.info("Flushed %d deferred messages", count)
+        return count
+
+    async def reload_active_queue(self) -> int:
+        """Pick up new messages in the active queue dir (e.g. after CLI flush).
+
+        Skips messages already tracked in memory to avoid double-delivery.
+        """
+        loop = asyncio.get_event_loop()
+        count = 0
+
+        def _list_queue():
+            files = []
+            if os.path.isdir(self._queue_dir):
+                for f in os.listdir(self._queue_dir):
+                    if f.endswith(".meta.json"):
+                        files.append(f.replace(".meta.json", ""))
+            return files
+
+        msg_ids = await loop.run_in_executor(None, _list_queue)
+
+        for msg_id in msg_ids:
+            if msg_id in self._known_ids:
+                continue
+            try:
+                meta_path = os.path.join(self._queue_dir, f"{msg_id}.meta.json")
+                data_path = os.path.join(self._queue_dir, f"{msg_id}.eml")
+                if os.path.exists(meta_path) and os.path.exists(data_path):
+                    msg = await loop.run_in_executor(
+                        None, QueueMessage.from_disk, meta_path, data_path
+                    )
+                    self._known_ids.add(msg_id)
+                    await self._delivery_queue.put(msg)
+                    count += 1
+            except Exception:
+                logger.exception("Error reloading queued message %s", msg_id)
+
+        if count:
+            logger.info("Reloaded %d new messages from active queue", count)
         return count
 
     async def delete_message(self, msg_id: str) -> bool:

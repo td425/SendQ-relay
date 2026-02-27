@@ -607,6 +607,11 @@ def queue_flush(ctx: click.Context) -> None:
     if pid:
         os.kill(pid, signal.SIGUSR1)
         click.echo("Signaled server to process queue.")
+    elif count > 0:
+        click.echo(
+            "WARNING: Server is not running. "
+            "Messages will be processed when the server is started."
+        )
 
 
 @cli.command("delete-msg")

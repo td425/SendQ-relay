@@ -371,5 +371,12 @@ class MTAServer:
 
         loop.add_signal_handler(signal.SIGHUP, _reload_handler)
 
+        # SIGUSR1 = reload active queue (used by flush-queue CLI command)
+        def _flush_handler():
+            logger.info("SIGUSR1 received — reloading active queue")
+            asyncio.ensure_future(self.queue_manager.reload_active_queue())
+
+        loop.add_signal_handler(signal.SIGUSR1, _flush_handler)
+
         await stop_event.wait()
         await self.stop()
