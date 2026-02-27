@@ -141,20 +141,13 @@ class SendQHandler:
             logger.exception("Failed to enqueue message")
             return "451 Temporary failure, please retry"
 
-    async def handle_AUTH(
-        self, server: SMTPServer, session: Session, envelope: Envelope, args: list[str]
-    ) -> str:
-        # Auth is handled by aiosmtpd's auth mechanism; this is a fallback
-        return "503 Use AUTH command with mechanism"
-
-
 class SendQAuthenticator:
-    """aiosmtpd-compatible authenticator bridge."""
+    """aiosmtpd-compatible authenticator bridge (synchronous)."""
 
     def __init__(self, auth: Authenticator):
         self._auth = auth
 
-    async def __call__(
+    def __call__(
         self, server: SMTPServer, session: Session, envelope: Envelope, mechanism: str, auth_data: Any
     ) -> Any:
         try:
@@ -266,7 +259,10 @@ class MTAServer:
             if require_auth:
                 kwargs["authenticator"] = auth_bridge
                 kwargs["auth_required"] = True
-                kwargs["auth_require_tls"] = tls_mode != "none"
+                # For implicit TLS the connection is already encrypted,
+                # so we don't need the additional "require TLS before AUTH"
+                # gate (which may not detect implicit-TLS sessions).
+                kwargs["auth_require_tls"] = tls_mode == "starttls"
 
             if tls_mode == "implicit" and ssl_context:
                 kwargs["ssl_context"] = ssl_context

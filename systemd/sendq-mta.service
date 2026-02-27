@@ -5,12 +5,11 @@ After=network-online.target nss-lookup.target
 Wants=network-online.target
 
 [Service]
-Type=forking
-PIDFile=/var/run/sendq-mta/sendq-mta.pid
+Type=simple
 ExecStartPre=+/usr/bin/sendq-mta validate-config
-ExecStart=/usr/bin/sendq-mta start
-ExecStop=/usr/bin/sendq-mta stop
-ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/usr/bin/sendq-mta start --foreground
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+ExecReload=/bin/kill -s SIGHUP $MAINPID
 
 User=sendq
 Group=sendq
@@ -26,7 +25,6 @@ ProtectControlGroups=yes
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-MemoryDenyWriteExecute=yes
 LockPersonality=yes
 
 # Allow writing to required directories
@@ -51,7 +49,7 @@ RestartSec=5
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
-# Watchdog
+# Timeouts
 TimeoutStartSec=30
 TimeoutStopSec=60
 
