@@ -10,7 +10,7 @@ from typing import Any
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP as SMTPServer, Envelope, Session
 
-from sendq_mta.core.config import Config
+from sendq_mta.core.config import Config, SNAKEOIL_CERT, SNAKEOIL_KEY, _generate_snakeoil
 from sendq_mta.auth.authenticator import Authenticator
 from sendq_mta.queue.manager import QueueManager
 from sendq_mta.core.rate_limiter import RateLimiter
@@ -183,6 +183,14 @@ def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
 
     if not cert or not key:
         return None
+
+    # Auto-generate snakeoil if using the default paths and files are missing
+    if (
+        cert == SNAKEOIL_CERT
+        and key == SNAKEOIL_KEY
+        and (not os.path.isfile(cert) or not os.path.isfile(key))
+    ):
+        _generate_snakeoil(cert, key)
 
     if not os.path.isfile(cert) or not os.path.isfile(key):
         logger.warning("TLS cert/key files not found; TLS disabled")

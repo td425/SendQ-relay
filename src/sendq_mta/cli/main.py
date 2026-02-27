@@ -876,25 +876,29 @@ def _run_server(config: Config) -> None:
 
 
 def _daemonize(config: Config) -> None:
-    """Fork into background daemon."""
+    """Fork into background daemon (proper double-fork)."""
     pid = os.fork()
     if pid > 0:
         click.echo(f"SendQ-MTA started (PID {pid})")
         sys.exit(0)
 
     os.setsid()
+    os.umask(0o027)
+    os.chdir("/")
 
     pid = os.fork()
     if pid > 0:
         sys.exit(0)
 
+    # Redirect standard file descriptors
     sys.stdin.close()
 
     log_file = config.get("logging.file", "/var/log/sendq-mta/sendq-mta.log")
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    sys.stdout = open(log_file, "a")
-    sys.stderr = open(log_file, "a")
+    log_fd = open(log_file, "a")
+    sys.stdout = log_fd
+    sys.stderr = log_fd
 
     _run_server(config)
 

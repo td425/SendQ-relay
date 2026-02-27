@@ -1,6 +1,8 @@
 """Configuration loader and validator for SendQ-MTA."""
 
 import os
+import subprocess
+import socket
 import sys
 import copy
 import logging
@@ -10,6 +12,48 @@ from typing import Any
 import yaml
 
 logger = logging.getLogger("sendq-mta.config")
+
+# Paths used for the auto-generated snakeoil certificate
+SNAKEOIL_CERT = "/etc/sendq-mta/certs/snakeoil.pem"
+SNAKEOIL_KEY = "/etc/sendq-mta/certs/snakeoil.key"
+
+
+def _generate_snakeoil(cert_path: str, key_path: str) -> bool:
+    """Auto-generate a snakeoil self-signed TLS cert if it doesn't exist.
+
+    Returns True if the cert now exists (either generated or already present).
+    """
+    if os.path.isfile(cert_path) and os.path.isfile(key_path):
+        return True
+
+    try:
+        hostname = socket.getfqdn() or "localhost"
+        cert_dir = os.path.dirname(cert_path)
+        os.makedirs(cert_dir, mode=0o750, exist_ok=True)
+
+        cmd = [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", key_path,
+            "-out", cert_path,
+            "-days", "3650",
+            "-nodes",
+            "-subj", f"/CN={hostname}/O=SendQ-MTA/OU=Mail Server",
+            "-addext", f"subjectAltName=DNS:{hostname},DNS:localhost,IP:127.0.0.1",
+        ]
+        subprocess.run(
+            cmd, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        os.chmod(key_path, 0o600)
+        os.chmod(cert_path, 0o644)
+        logger.info(
+            "Auto-generated snakeoil TLS certificate: %s (CN=%s)",
+            cert_path, hostname,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to auto-generate snakeoil cert: %s", exc)
+        return False
 
 DEFAULT_CONFIG_PATHS = [
     "/etc/sendq-mta/sendq-mta.yml",
@@ -262,14 +306,26 @@ class Config:
         )
         tls_cfg = self._data.get("tls", {})
         if tls_needed:
-            if not tls_cfg.get("cert_file"):
+            cert_file = tls_cfg.get("cert_file", "")
+            key_file = tls_cfg.get("key_file", "")
+
+            # Auto-generate snakeoil cert when the default paths are configured
+            # but the files don't exist yet (e.g. first boot without install.sh)
+            if (
+                cert_file == SNAKEOIL_CERT
+                and key_file == SNAKEOIL_KEY
+                and (not os.path.isfile(cert_file) or not os.path.isfile(key_file))
+            ):
+                _generate_snakeoil(cert_file, key_file)
+
+            if not cert_file:
                 errors.append("tls.cert_file required when TLS listeners exist")
-            elif not os.path.isfile(tls_cfg["cert_file"]):
-                errors.append(f"tls.cert_file not found: {tls_cfg['cert_file']}")
-            if not tls_cfg.get("key_file"):
+            elif not os.path.isfile(cert_file):
+                errors.append(f"tls.cert_file not found: {cert_file}")
+            if not key_file:
                 errors.append("tls.key_file required when TLS listeners exist")
-            elif not os.path.isfile(tls_cfg["key_file"]):
-                errors.append(f"tls.key_file not found: {tls_cfg['key_file']}")
+            elif not os.path.isfile(key_file):
+                errors.append(f"tls.key_file not found: {key_file}")
 
         # Relay
         relay = self._data.get("relay", {})

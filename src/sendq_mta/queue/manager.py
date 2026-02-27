@@ -68,6 +68,17 @@ class QueueMessage:
         return cls(data=data, **meta)
 
 
+def _safe_msg_id(msg_id: str) -> str:
+    """Validate that a message ID is safe for use in file paths.
+
+    Prevents path traversal (e.g. ``../../etc/passwd``).
+    """
+    basename = os.path.basename(msg_id)
+    if basename != msg_id or not msg_id or ".." in msg_id:
+        raise ValueError(f"Invalid message ID: {msg_id!r}")
+    return msg_id
+
+
 class QueueManager:
     """Manages the persistent mail queue and delivery workers."""
 
@@ -127,8 +138,9 @@ class QueueManager:
 
     async def _write_to_disk(self, msg: QueueMessage, directory: str) -> None:
         """Persist message to disk (metadata + body as separate files)."""
-        meta_path = os.path.join(directory, f"{msg.msg_id}.meta.json")
-        data_path = os.path.join(directory, f"{msg.msg_id}.eml")
+        safe_id = _safe_msg_id(msg.msg_id)
+        meta_path = os.path.join(directory, f"{safe_id}.meta.json")
+        data_path = os.path.join(directory, f"{safe_id}.eml")
 
         loop = asyncio.get_event_loop()
 
@@ -142,11 +154,12 @@ class QueueManager:
 
     async def _remove_from_disk(self, msg_id: str, directory: str) -> None:
         """Remove a message from disk."""
+        safe_id = _safe_msg_id(msg_id)
         loop = asyncio.get_event_loop()
 
         def _remove():
             for ext in (".meta.json", ".eml"):
-                path = os.path.join(directory, f"{msg_id}{ext}")
+                path = os.path.join(directory, f"{safe_id}{ext}")
                 if os.path.exists(path):
                     os.unlink(path)
 

@@ -45,9 +45,14 @@ class ManagementAPI:
         if os.path.exists(socket_path):
             os.unlink(socket_path)
 
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=socket_path
-        )
+        # Set restrictive umask so the socket is created with tight permissions
+        old_umask = os.umask(0o117)
+        try:
+            self._server = await asyncio.start_unix_server(
+                self._handle_connection, path=socket_path
+            )
+        finally:
+            os.umask(old_umask)
         os.chmod(socket_path, 0o660)
         logger.info("Management API listening on %s", socket_path)
 

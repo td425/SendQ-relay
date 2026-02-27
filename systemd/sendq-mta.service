@@ -34,6 +34,7 @@ ReadWritePaths=/var/spool/sendq-mta
 ReadWritePaths=/var/log/sendq-mta
 ReadWritePaths=/var/run/sendq-mta
 ReadWritePaths=/var/lib/sendq-mta
+ReadWritePaths=/etc/sendq-mta/certs
 
 # Capabilities — only what's needed for port binding
 AmbientCapabilities=CAP_NET_BIND_SERVICE

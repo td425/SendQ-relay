@@ -177,14 +177,53 @@ class RateLimiter:
             }
 
     def _cleanup_loop(self) -> None:
-        """Periodically clean up expired entries."""
+        """Periodically clean up expired entries to prevent memory exhaustion."""
+        # Hard cap on tracked entries per category before forced eviction.
+        max_tracked = 50000
+
         while self._cleanup_running:
             time.sleep(300)
             now = time.monotonic()
             with self._lock:
+                # Expire bans
                 expired = [ip for ip, exp in self._banned_ips.items() if now > exp]
                 for ip in expired:
                     del self._banned_ips[ip]
+
+                # Evict stale per-IP counters (no activity in last window)
+                stale = [ip for ip, c in self._ip_message_counters.items() if c.count == 0]
+                for ip in stale:
+                    del self._ip_message_counters[ip]
+
+                stale = [ip for ip, c in self._ip_error_counts.items() if c.count == 0]
+                for ip in stale:
+                    del self._ip_error_counts[ip]
+
+                stale = [ip for ip, cnt in self._ip_connection_counts.items() if cnt <= 0]
+                for ip in stale:
+                    del self._ip_connection_counts[ip]
+
+                # Evict stale per-domain and per-user counters
+                for store in (
+                    self._domain_counters,
+                    self._user_message_counters,
+                    self._user_recipient_counters,
+                ):
+                    stale = [k for k, c in store.items() if c.count == 0]
+                    for k in stale:
+                        del store[k]
+
+                # Hard cap: if still over limit, evict oldest entries
+                for store in (
+                    self._ip_message_counters,
+                    self._ip_error_counts,
+                    self._domain_counters,
+                    self._user_message_counters,
+                    self._user_recipient_counters,
+                ):
+                    if len(store) > max_tracked:
+                        for k in list(store.keys())[: len(store) - max_tracked]:
+                            del store[k]
 
     def shutdown(self) -> None:
         self._cleanup_running = False
