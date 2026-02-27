@@ -7,9 +7,9 @@ Wants=network-online.target
 [Service]
 Type=forking
 PIDFile=/var/run/sendq-mta/sendq-mta.pid
-ExecStartPre=/usr/local/bin/sendq-mta validate-config
-ExecStart=/usr/local/bin/sendq-mta start
-ExecStop=/usr/local/bin/sendq-mta stop
+ExecStartPre=/usr/bin/sendq-mta validate-config
+ExecStart=/usr/bin/sendq-mta start
+ExecStop=/usr/bin/sendq-mta stop
 ExecReload=/bin/kill -HUP $MAINPID
 
 User=sendq

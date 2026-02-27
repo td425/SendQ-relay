@@ -111,9 +111,23 @@ fi
 "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel 2>/dev/null
 "$VENV_DIR/bin/pip" install "$SCRIPT_DIR[full]"
 
-# Create symlink for the CLI
+# Create symlinks for the CLI — both /usr/local/bin and /usr/bin
+# Many systems (especially root shells) don't include /usr/local/bin in PATH
 ln -sf "$VENV_DIR/bin/sendq-mta" "$INSTALL_PREFIX/bin/sendq-mta"
-log "CLI installed at: $INSTALL_PREFIX/bin/sendq-mta"
+ln -sf "$VENV_DIR/bin/sendq-mta" "/usr/bin/sendq-mta"
+log "CLI installed at: /usr/bin/sendq-mta"
+
+# Also ensure /usr/local/bin is in PATH for future sessions
+PROFILE_LINE='export PATH="/usr/local/bin:$PATH"'
+for profile_file in /etc/profile.d/sendq-mta.sh; do
+    if [[ ! -f "$profile_file" ]]; then
+        echo "#!/bin/sh" > "$profile_file"
+        echo '# Added by SendQ-MTA installer — ensures /usr/local/bin is in PATH' >> "$profile_file"
+        echo "$PROFILE_LINE" >> "$profile_file"
+        chmod 644 "$profile_file"
+        log "Added /usr/local/bin to PATH via $profile_file"
+    fi
+done
 
 # ============================================================================
 # Install configuration

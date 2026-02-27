@@ -55,8 +55,12 @@ if [[ -d /usr/local/lib/sendq-mta ]]; then
     rm -rf /usr/local/lib/sendq-mta
 fi
 
-# Remove CLI symlink
+# Remove CLI symlinks
 rm -f /usr/local/bin/sendq-mta
+rm -f /usr/bin/sendq-mta
+
+# Remove PATH profile
+rm -f /etc/profile.d/sendq-mta.sh
 
 # Remove runtime dir
 rm -rf /var/run/sendq-mta
