@@ -839,16 +839,26 @@ def test_send(
         import aiosmtplib
 
         try:
-            smtp = aiosmtplib.SMTP(hostname=host, port=port, timeout=30)
-            await smtp.connect()
+            import ssl as _ssl
+            tls_ctx = _ssl.create_default_context()
+            tls_ctx.check_hostname = False
+            tls_ctx.verify_mode = _ssl.CERT_NONE
 
-            # Try STARTTLS if available (opportunistic)
-            if port != 465:
+            if port == 465:
+                # Implicit TLS
+                smtp = aiosmtplib.SMTP(
+                    hostname=host, port=port, timeout=30,
+                    use_tls=True, tls_context=tls_ctx,
+                )
+                await smtp.connect()
+            else:
+                # Plain connect, then opportunistic STARTTLS
+                smtp = aiosmtplib.SMTP(
+                    hostname=host, port=port, timeout=30,
+                    start_tls=False,
+                )
+                await smtp.connect()
                 try:
-                    import ssl as _ssl
-                    tls_ctx = _ssl.create_default_context()
-                    tls_ctx.check_hostname = False
-                    tls_ctx.verify_mode = _ssl.CERT_NONE
                     await smtp.starttls(tls_context=tls_ctx)
                 except Exception:
                     pass  # Continue without TLS
