@@ -790,6 +790,79 @@ def relay_test(ctx: click.Context) -> None:
 # ============================================================================
 
 
+@cli.command("test-send")
+@click.option("--to", "recipient", required=True, help="Recipient email address.")
+@click.option("--from", "sender", default=None, help="Sender address (default: test@<hostname>).")
+@click.option("--subject", "-s", default="SendQ-MTA Test Message", help="Email subject.")
+@click.option("--body", "-b", default=None, help="Email body text.")
+@click.option("--port", "-p", type=int, default=25, help="SMTP port to connect to (default: 25).")
+@click.option("--host", "-h", default="127.0.0.1", help="SMTP host to connect to (default: 127.0.0.1).")
+@click.pass_context
+def test_send(
+    ctx: click.Context,
+    recipient: str,
+    sender: str | None,
+    subject: str,
+    body: str | None,
+    port: int,
+    host: str,
+) -> None:
+    """Send a test email through the local MTA."""
+    config = _load_config(ctx)
+    hostname = config.get("server.hostname", "localhost")
+    if not sender:
+        sender = f"test@{hostname}"
+    if not body:
+        body = (
+            f"This is a test message from SendQ-MTA.\n"
+            f"Hostname: {hostname}\n"
+            f"If you received this, outbound delivery is working.\n"
+        )
+
+    from email.mime.text import MIMEText
+    from email.utils import formatdate, make_msgid
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=hostname)
+
+    click.echo(f"Sending test email...")
+    click.echo(f"  From:    {sender}")
+    click.echo(f"  To:      {recipient}")
+    click.echo(f"  Subject: {subject}")
+    click.echo(f"  Via:     {host}:{port}")
+
+    async def _send():
+        import aiosmtplib
+
+        try:
+            smtp = aiosmtplib.SMTP(hostname=host, port=port, timeout=30)
+            await smtp.connect()
+
+            # Try STARTTLS if available (opportunistic)
+            if port != 465:
+                try:
+                    import ssl as _ssl
+                    tls_ctx = _ssl.create_default_context()
+                    tls_ctx.check_hostname = False
+                    tls_ctx.verify_mode = _ssl.CERT_NONE
+                    await smtp.starttls(tls_context=tls_ctx)
+                except Exception:
+                    pass  # Continue without TLS
+
+            await smtp.sendmail(sender, [recipient], msg.as_string())
+            await smtp.quit()
+            click.echo("\nTest email sent successfully! Check the queue with: sendq-mta queue-status -v")
+        except Exception as e:
+            click.echo(f"\nFailed to send test email: {e}", err=True)
+            ctx.exit(1)
+
+    asyncio.run(_send())
+
+
 @cli.command("generate-dkim")
 @click.option("--domain", "-d", required=True, help="Domain to generate DKIM key for.")
 @click.option("--selector", "-s", default=None, help="DKIM selector (default: from config).")
