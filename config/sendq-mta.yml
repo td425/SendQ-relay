@@ -56,9 +56,11 @@ listeners:
 # TLS / SSL Configuration
 # --------------------------------------------------------------------------
 tls:
-  cert_file: "/etc/sendq-mta/certs/fullchain.pem"
-  key_file: "/etc/sendq-mta/certs/privkey.pem"
-  ca_file: "/etc/sendq-mta/certs/ca-bundle.pem"
+  # Default: snakeoil self-signed cert (auto-generated on install).
+  # Replace with real certs (e.g. Let's Encrypt) for production.
+  cert_file: "/etc/sendq-mta/certs/snakeoil.pem"
+  key_file: "/etc/sendq-mta/certs/snakeoil.key"
+  ca_file: ""
   min_version: "TLSv1.2"                  # TLSv1.2 | TLSv1.3
   ciphers: "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20"
   prefer_server_ciphers: true

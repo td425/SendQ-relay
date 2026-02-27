@@ -96,6 +96,37 @@ chmod 750 "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR/dkim"
 
 # ============================================================================
+# Generate snakeoil TLS certificate (self-signed, for immediate use)
+# ============================================================================
+SNAKEOIL_CERT="$CONFIG_DIR/certs/snakeoil.pem"
+SNAKEOIL_KEY="$CONFIG_DIR/certs/snakeoil.key"
+
+if [[ ! -f "$SNAKEOIL_CERT" || ! -f "$SNAKEOIL_KEY" ]]; then
+    log "Generating snakeoil self-signed TLS certificate..."
+
+    # Detect hostname for the certificate CN/SAN
+    SYSTEM_HOSTNAME="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo 'localhost')"
+
+    openssl req -x509 -newkey rsa:2048 \
+        -keyout "$SNAKEOIL_KEY" \
+        -out "$SNAKEOIL_CERT" \
+        -days 3650 \
+        -nodes \
+        -subj "/CN=$SYSTEM_HOSTNAME/O=SendQ-MTA/OU=Mail Server" \
+        -addext "subjectAltName=DNS:$SYSTEM_HOSTNAME,DNS:localhost,IP:127.0.0.1" \
+        2>/dev/null
+
+    chmod 600 "$SNAKEOIL_KEY"
+    chmod 644 "$SNAKEOIL_CERT"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$SNAKEOIL_KEY" "$SNAKEOIL_CERT"
+
+    log "Snakeoil cert generated: $SNAKEOIL_CERT (CN=$SYSTEM_HOSTNAME, valid 10 years)"
+    warn "This is a self-signed certificate — replace with real certs for production."
+else
+    log "Snakeoil certificate already exists at $SNAKEOIL_CERT (not overwritten)"
+fi
+
+# ============================================================================
 # Install Python package
 # ============================================================================
 log "Installing SendQ-MTA Python package..."
@@ -184,9 +215,9 @@ echo ""
 echo "  2. Configure your SMTP relay (if using one):"
 echo "     Set relay.enabled: true and fill in host/port/username/password"
 echo ""
-echo "  3. Set up TLS certificates:"
-echo "     Place cert at: $CONFIG_DIR/certs/fullchain.pem"
-echo "     Place key at:  $CONFIG_DIR/certs/privkey.pem"
+echo "  3. TLS is ready out of the box (snakeoil self-signed cert)."
+echo "     For production, replace with real certs:"
+echo "     sudo nano $CONFIG_DIR/sendq-mta.yml  # update tls.cert_file / tls.key_file"
 echo ""
 echo "  4. Add your first domain and user:"
 echo "     sendq-mta add-domain example.com"

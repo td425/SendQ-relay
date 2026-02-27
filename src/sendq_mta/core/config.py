@@ -41,8 +41,8 @@ DEFAULTS = {
         }
     ],
     "tls": {
-        "cert_file": "",
-        "key_file": "",
+        "cert_file": "/etc/sendq-mta/certs/snakeoil.pem",
+        "key_file": "/etc/sendq-mta/certs/snakeoil.key",
         "ca_file": "",
         "min_version": "TLSv1.2",
         "ciphers": "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20",
