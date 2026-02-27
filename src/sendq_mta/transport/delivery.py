@@ -18,10 +18,20 @@ logger = logging.getLogger("sendq-mta.delivery")
 class DeliveryEngine:
     """Delivers messages via relay or direct MX lookup."""
 
+    # Fallback nameservers when the system has none configured
+    _FALLBACK_DNS = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
+
     def __init__(self, config: Config):
         self.config = config
         self._pool = ConnectionPool(config) if config.get("delivery.connection_pool.enabled", True) else None
-        self._dns_resolver = dns.resolver.Resolver()
+
+        try:
+            self._dns_resolver = dns.resolver.Resolver()
+        except dns.resolver.NoResolverConfiguration:
+            logger.warning("No system DNS configured; falling back to public resolvers")
+            self._dns_resolver = dns.resolver.Resolver(configure=False)
+            self._dns_resolver.nameservers = list(self._FALLBACK_DNS)
+
         self._dns_resolver.lifetime = config.get("delivery.dns_timeout", 10)
 
         custom_dns = config.get("delivery.dns_servers", [])
