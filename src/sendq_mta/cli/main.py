@@ -1067,6 +1067,32 @@ def _daemonize(config: Config) -> None:
 
 
 # ============================================================================
+# Dashboard
+# ============================================================================
+
+
+@cli.command("dashboard")
+@click.option("--host", "-H", default="0.0.0.0", help="Bind address.")
+@click.option("--port", "-p", default=8225, type=int, help="Port number.")
+@click.pass_context
+def run_dashboard(ctx: click.Context, host: str, port: int) -> None:
+    """Launch the web management dashboard."""
+    config = _load_config(ctx)
+    try:
+        from sendq_mta.dashboard.app import run_dashboard as _run
+    except ImportError:
+        click.echo(
+            "Dashboard requires Flask. Install it with:\n"
+            "  pip install 'sendq-mta[dashboard]'",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    click.echo(f"Starting dashboard on http://{host}:{port}")
+    _run(config, host=host, port=port)
+
+
+# ============================================================================
 # Entry Point
 # ============================================================================
 

@@ -44,7 +44,9 @@ full = [
     "pyspf>=2.0.14",
     "bcrypt>=4.0",
     "cryptography>=41.0",
+    "flask>=3.0",
 ]
+dashboard = ["flask>=3.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SendQ-MTA Dashboard</title>
+<style>
+/* ── Reset & Variables ──────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f0f7f0;
+  --bg-sidebar:#1a3a1a;
+  --bg-sidebar-hover:#254d25;
+  --bg-sidebar-active:#2e6b2e;
+  --bg-card:#ffffff;
+  --bg-card-alt:#f6faf6;
+  --accent:#2e7d32;
+  --accent-light:#e8f5e9;
+  --accent-medium:#a5d6a7;
+  --accent-dark:#1b5e20;
+  --border:#c8e6c9;
+  --text:#1a2e1a;
+  --text-secondary:#4a6a4a;
+  --text-muted:#7a9a7a;
+  --success:#43a047;
+  --warning:#f9a825;
+  --danger:#e53935;
+  --info:#29b6f6;
+  --shadow:0 2px 8px rgba(30,70,30,.08);
+  --shadow-lg:0 4px 20px rgba(30,70,30,.12);
+  --radius:10px;
+  --radius-sm:6px;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --mono:'SF Mono',Consolas,'Liberation Mono',monospace;
+}
+html{font-size:14px}
+body{font-family:var(--font);background:var(--bg);color:var(--text);display:flex;min-height:100vh}
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+.sidebar{
+  width:240px;min-height:100vh;background:var(--bg-sidebar);color:#d4e8d4;
+  display:flex;flex-direction:column;position:fixed;top:0;left:0;z-index:100;
+  transition:transform .3s;
+}
+.sidebar-brand{padding:24px 20px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
+.sidebar-brand h1{font-size:1.25rem;color:#fff;font-weight:700;letter-spacing:.5px}
+.sidebar-brand small{display:block;font-size:.7rem;color:#8cb88c;margin-top:2px}
+.sidebar-nav{flex:1;padding:12px 0}
+.sidebar-nav a{
+  display:flex;align-items:center;gap:12px;padding:11px 20px;color:#b8d8b8;
+  text-decoration:none;font-size:.9rem;transition:all .15s;cursor:pointer;
+  border-left:3px solid transparent;
+}
+.sidebar-nav a:hover{background:var(--bg-sidebar-hover);color:#fff}
+.sidebar-nav a.active{background:var(--bg-sidebar-active);color:#fff;border-left-color:#66bb6a}
+.sidebar-nav a svg{width:18px;height:18px;flex-shrink:0;opacity:.75}
+.sidebar-nav a.active svg{opacity:1}
+.sidebar-footer{padding:16px 20px;border-top:1px solid rgba(255,255,255,.08);font-size:.7rem;color:#6a8a6a}
+
+/* ── Main ───────────────────────────────────────────────────────────── */
+.main{margin-left:240px;flex:1;min-height:100vh}
+.topbar{
+  background:var(--bg-card);border-bottom:1px solid var(--border);padding:16px 28px;
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:50;
+}
+.topbar h2{font-size:1.15rem;color:var(--accent-dark);font-weight:600}
+.topbar-right{display:flex;align-items:center;gap:12px}
+.server-badge{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 14px;
+  border-radius:20px;font-size:.78rem;font-weight:600;
+}
+.server-badge.running{background:#e8f5e9;color:#2e7d32}
+.server-badge.stopped{background:#ffebee;color:#c62828}
+.server-badge .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.server-badge.running .dot{background:#43a047;animation:pulse 2s infinite}
+.server-badge.stopped .dot{background:#e53935}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.content{padding:24px 28px}
+
+/* ── Panels / Tabs ──────────────────────────────────────────────────── */
+.panel{display:none}
+.panel.active{display:block}
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;box-shadow:var(--shadow);transition:transform .15s,box-shadow .15s;
+}
+.stat-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
+.stat-card .label{font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.stat-card .value{font-size:1.8rem;font-weight:700;color:var(--accent-dark)}
+.stat-card .value.danger{color:var(--danger)}
+.stat-card .value.warning{color:var(--warning)}
+.stat-card .sub{font-size:.72rem;color:var(--text-muted);margin-top:4px}
+
+.card{
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);margin-bottom:20px;
+}
+.card-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--accent-light);border-radius:var(--radius) var(--radius) 0 0;
+}
+.card-header h3{font-size:.95rem;color:var(--accent-dark);font-weight:600}
+.card-body{padding:20px}
+
+/* ── Tables ─────────────────────────────────────────────────────────── */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+thead th{
+  text-align:left;padding:10px 12px;color:var(--text-muted);font-weight:600;
+  border-bottom:2px solid var(--border);font-size:.75rem;text-transform:uppercase;letter-spacing:.3px;
+}
+tbody td{padding:10px 12px;border-bottom:1px solid #eef5ee;vertical-align:middle}
+tbody tr:hover{background:var(--accent-light)}
+tbody tr:last-child td{border-bottom:none}
+
+/* ── Badges ─────────────────────────────────────────────────────────── */
+.badge{
+  display:inline-block;padding:3px 10px;border-radius:12px;font-size:.7rem;font-weight:600;
+}
+.badge-active{background:#e8f5e9;color:#2e7d32}
+.badge-deferred{background:#fff8e1;color:#f57f17}
+.badge-failed{background:#ffebee;color:#c62828}
+.badge-enabled{background:#e8f5e9;color:#2e7d32}
+.badge-disabled{background:#fce4ec;color:#c62828}
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border:none;
+  border-radius:var(--radius-sm);font-size:.82rem;font-weight:600;cursor:pointer;
+  transition:all .15s;font-family:var(--font);
+}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-dark)}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-danger:hover{background:#c62828}
+.btn-warning{background:var(--warning);color:#fff}
+.btn-warning:hover{background:#f57f17}
+.btn-outline{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.btn-outline:hover{background:var(--accent-light)}
+.btn-sm{padding:5px 12px;font-size:.75rem}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ── Forms ──────────────────────────────────────────────────────────── */
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:.78rem;color:var(--text-secondary);font-weight:600;margin-bottom:4px}
+.form-control{
+  width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  font-size:.85rem;font-family:var(--font);background:var(--bg-card-alt);
+  transition:border-color .15s;
+}
+.form-control:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(46,125,50,.12)}
+select.form-control{appearance:auto}
+
+/* ── Modal ──────────────────────────────────────────────────────────── */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;
+  justify-content:center;z-index:1000;
+}
+.modal-overlay.show{display:flex}
+.modal{
+  background:var(--bg-card);border-radius:var(--radius);width:440px;max-width:92vw;
+  box-shadow:var(--shadow-lg);
+}
+.modal-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);display:flex;
+  align-items:center;justify-content:space-between;background:var(--accent-light);
+  border-radius:var(--radius) var(--radius) 0 0;
+}
+.modal-header h3{font-size:.95rem;color:var(--accent-dark)}
+.modal-close{background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--text-muted);padding:4px}
+.modal-body{padding:20px}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+
+/* ── Log Viewer ─────────────────────────────────────────────────────── */
+.log-viewer{
+  background:#0d1a0d;color:#a5d6a7;font-family:var(--mono);font-size:.75rem;
+  padding:16px;border-radius:var(--radius);max-height:500px;overflow-y:auto;
+  line-height:1.6;white-space:pre-wrap;word-break:break-all;
+}
+.log-viewer .log-error{color:#ef9a9a}
+.log-viewer .log-warning{color:#fff59d}
+.log-viewer .log-info{color:#a5d6a7}
+
+/* ── Config Viewer ──────────────────────────────────────────────────── */
+.config-viewer{
+  background:#f6faf6;font-family:var(--mono);font-size:.78rem;padding:16px;
+  border-radius:var(--radius);border:1px solid var(--border);max-height:600px;
+  overflow-y:auto;line-height:1.6;white-space:pre-wrap;
+}
+
+/* ── Feature chips ──────────────────────────────────────────────────── */
+.feature-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.feature-chip{
+  display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+  border-radius:20px;font-size:.78rem;font-weight:600;
+}
+.feature-chip.on{background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7}
+.feature-chip.off{background:#fafafa;color:#999;border:1px solid #e0e0e0}
+.feature-chip .chip-dot{width:7px;height:7px;border-radius:50%}
+.feature-chip.on .chip-dot{background:#43a047}
+.feature-chip.off .chip-dot{background:#bbb}
+
+/* ── Listeners ──────────────────────────────────────────────────────── */
+.listener-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.listener-card{
+  background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:14px;
+}
+.listener-card .lc-name{font-weight:700;color:var(--accent-dark);font-size:.9rem;margin-bottom:6px}
+.listener-card .lc-detail{font-size:.78rem;color:var(--text-secondary);line-height:1.6}
+
+/* ── Toast ──────────────────────────────────────────────────────────── */
+.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{
+  padding:12px 20px;border-radius:var(--radius-sm);color:#fff;font-size:.82rem;
+  font-weight:500;box-shadow:var(--shadow-lg);animation:slideIn .3s;min-width:260px;
+}
+.toast-success{background:#2e7d32}
+.toast-error{background:#c62828}
+.toast-info{background:#0277bd}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main{margin-left:0}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .topbar{padding:12px 16px}
+  .content{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <h1>SendQ-MTA</h1>
+    <small>Enterprise Mail Server</small>
+  </div>
+  <div class="sidebar-nav">
+    <a data-panel="dashboard" class="active" onclick="switchPanel('dashboard',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </a>
+    <a data-panel="queue" onclick="switchPanel('queue',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Queue
+    </a>
+    <a data-panel="users" onclick="switchPanel('users',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Users
+    </a>
+    <a data-panel="domains" onclick="switchPanel('domains',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      Domains
+    </a>
+    <a data-panel="config" onclick="switchPanel('config',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Configuration
+    </a>
+    <a data-panel="logs" onclick="switchPanel('logs',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      Logs
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    SendQ-MTA v1.0.0<br>by Zabith Siraj
+  </div>
+</nav>
+
+<!-- ── Main Content ────────────────────────────────────────────────── -->
+<div class="main">
+  <div class="topbar">
+    <h2 id="topbar-title">Dashboard</h2>
+    <div class="topbar-right">
+      <span class="server-badge stopped" id="server-badge">
+        <span class="dot"></span> <span id="server-status-text">Checking...</span>
+      </span>
+      <div class="btn-group">
+        <button class="btn btn-primary btn-sm" onclick="serverAction('start')" id="btn-start">Start</button>
+        <button class="btn btn-danger btn-sm" onclick="serverAction('stop')" id="btn-stop">Stop</button>
+        <button class="btn btn-outline btn-sm" onclick="serverAction('reload')">Reload</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+    <!-- ── Dashboard Panel ──────────────────────────────────────── -->
+    <div class="panel active" id="panel-dashboard">
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card"><div class="label">Active Queue</div><div class="value" id="stat-active">-</div><div class="sub">messages pending delivery</div></div>
+        <div class="stat-card"><div class="label">Deferred</div><div class="value warning" id="stat-deferred">-</div><div class="sub">awaiting retry</div></div>
+        <div class="stat-card"><div class="label">Failed</div><div class="value danger" id="stat-failed">-</div><div class="sub">permanently failed</div></div>
+        <div class="stat-card"><div class="label">Users</div><div class="value" id="stat-users">-</div><div class="sub">configured accounts</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>Server Information</h3></div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div>
+              <table>
+                <tr><td style="color:var(--text-muted);padding:6px 12px 6px 0">Hostname</td><td id="info-hostname" style="font-weight:600">-</td></tr>
+                <tr><td style="color:var(--text-muted);padding:6px 12px 6px 0">PID</td><td id="info-pid">-</td></tr>
+                <tr><td style="color:var(--text-muted);padding:6px 12px 6px 0">Relay</td><td id="info-relay">-</td></tr>
+              </table>
+            </div>
+            <div>
+              <div style="font-size:.78rem;color:var(--text-muted);font-weight:600;margin-bottom:6px">FEATURES</div>
+              <div class="feature-grid" id="feature-grid"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>Listeners</h3></div>
+        <div class="card-body">
+          <div class="listener-cards" id="listener-cards"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Queue Panel ──────────────────────────────────────────── -->
+    <div class="panel" id="panel-queue">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div class="btn-group">
+          <button class="btn btn-outline btn-sm" onclick="loadQueue('all')" id="q-filter-all">All</button>
+          <button class="btn btn-outline btn-sm" onclick="loadQueue('active')">Active</button>
+          <button class="btn btn-outline btn-sm" onclick="loadQueue('deferred')">Deferred</button>
+          <button class="btn btn-outline btn-sm" onclick="loadQueue('failed')">Failed</button>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-warning btn-sm" onclick="flushQueue()">Flush Queue</button>
+          <button class="btn btn-danger btn-sm" onclick="purgeFailedQueue()">Purge Failed</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Message ID</th><th>Sender</th><th>Recipients</th><th>Queue</th><th>Retry</th><th>Error</th><th>Actions</th></tr></thead>
+              <tbody id="queue-table-body"><tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Users Panel ──────────────────────────────────────────── -->
+    <div class="panel" id="panel-users">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="color:var(--accent-dark)">Mail Users</h3>
+        <button class="btn btn-primary btn-sm" onclick="showAddUserModal()">+ Add User</button>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Username</th><th>Email</th><th>Display Name</th><th>Status</th><th>Created</th><th>Last Login</th><th>Actions</th></tr></thead>
+              <tbody id="users-table-body"><tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Domains Panel ────────────────────────────────────────── -->
+    <div class="panel" id="panel-domains">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="color:var(--accent-dark)">Domain Management</h3>
+        <button class="btn btn-primary btn-sm" onclick="showAddDomainModal()">+ Add Domain</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px" id="domains-grid">
+        <div class="card"><div class="card-header"><h3>Local Domains</h3></div><div class="card-body" id="local-domains-list">Loading...</div></div>
+        <div class="card"><div class="card-header"><h3>Relay Domains</h3></div><div class="card-body" id="relay-domains-list">Loading...</div></div>
+        <div class="card"><div class="card-header"><h3>Blocked Domains</h3></div><div class="card-body" id="blocked-domains-list">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ── Config Panel ─────────────────────────────────────────── -->
+    <div class="panel" id="panel-config">
+      <div class="card">
+        <div class="card-header">
+          <h3>Configuration</h3>
+          <span style="font-size:.75rem;color:var(--text-muted)" id="config-path"></span>
+        </div>
+        <div class="card-body">
+          <div class="config-viewer" id="config-viewer">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Logs Panel ───────────────────────────────────────────── -->
+    <div class="panel" id="panel-logs">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="color:var(--accent-dark)">Server Logs</h3>
+        <div class="btn-group">
+          <button class="btn btn-outline btn-sm" onclick="loadLogs()">Refresh</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--text-secondary)">
+            <input type="checkbox" id="auto-refresh-logs"> Auto-refresh
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body" style="padding:0">
+          <div class="log-viewer" id="log-viewer">Loading logs...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast Container ─────────────────────────────────────────────── -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ── Modal: Add User ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-add-user">
+  <div class="modal">
+    <div class="modal-header"><h3>Add New User</h3><button class="modal-close" onclick="closeModal('modal-add-user')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Username</label><input class="form-control" id="new-user-name" placeholder="john"></div>
+      <div class="form-group"><label>Password (min 12 characters)</label><input class="form-control" id="new-user-pass" type="password"></div>
+      <div class="form-group"><label>Email</label><input class="form-control" id="new-user-email" placeholder="john@example.com"></div>
+      <div class="form-group"><label>Display Name</label><input class="form-control" id="new-user-display" placeholder="John Doe"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('modal-add-user')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="addUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: Edit User ────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-edit-user">
+  <div class="modal">
+    <div class="modal-header"><h3>Edit User</h3><button class="modal-close" onclick="closeModal('modal-edit-user')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Username</label><input class="form-control" id="edit-user-name" disabled></div>
+      <div class="form-group"><label>Email</label><input class="form-control" id="edit-user-email"></div>
+      <div class="form-group"><label>Display Name</label><input class="form-control" id="edit-user-display"></div>
+      <div class="form-group"><label>Status</label><select class="form-control" id="edit-user-enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+      <div class="form-group"><label>New Password (leave blank to keep current)</label><input class="form-control" id="edit-user-pass" type="password" placeholder="Leave blank to keep current"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('modal-edit-user')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveEditUser()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: Add Domain ───────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-add-domain">
+  <div class="modal">
+    <div class="modal-header"><h3>Add Domain</h3><button class="modal-close" onclick="closeModal('modal-add-domain')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Domain</label><input class="form-control" id="new-domain-name" placeholder="example.com"></div>
+      <div class="form-group"><label>Type</label><select class="form-control" id="new-domain-type"><option value="local">Local</option><option value="relay">Relay</option><option value="blocked">Blocked</option></select></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('modal-add-domain')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="addDomain()">Add Domain</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────── */
+let currentPanel = 'dashboard';
+let logInterval = null;
+
+/* ── Helpers ────────────────────────────────────────────────────────── */
+async function api(url, opts = {}) {
+  try {
+    const r = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    return await r.json();
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+
+function toast(msg, type = 'success') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+function shortId(id) {
+  return id && id.length > 28 ? id.slice(0, 28) + '...' : id;
+}
+
+function shortDate(iso) {
+  if (!iso) return '-';
+  return iso.replace('T', ' ').replace('Z', '').slice(0, 16);
+}
+
+/* ── Panel Switching ───────────────────────────────────────────────── */
+function switchPanel(name, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  if (el) el.classList.add('active');
+  const titles = { dashboard:'Dashboard', queue:'Queue Management', users:'User Management', domains:'Domains', config:'Configuration', logs:'Server Logs' };
+  document.getElementById('topbar-title').textContent = titles[name] || name;
+  currentPanel = name;
+  if (name === 'queue') loadQueue('all');
+  if (name === 'users') loadUsers();
+  if (name === 'domains') loadDomains();
+  if (name === 'config') loadConfig();
+  if (name === 'logs') loadLogs();
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────── */
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+
+/* ── Dashboard ─────────────────────────────────────────────────────── */
+async function loadDashboard() {
+  const res = await api('/api/status');
+  if (res.status === 'error') return;
+
+  const s = res.server || {};
+  const q = res.queue || {};
+  const badge = document.getElementById('server-badge');
+  const stxt = document.getElementById('server-status-text');
+
+  if (s.running) {
+    badge.className = 'server-badge running';
+    stxt.textContent = `Running (PID ${s.pid})`;
+  } else {
+    badge.className = 'server-badge stopped';
+    stxt.textContent = 'Stopped';
+  }
+
+  document.getElementById('stat-active').textContent = q.active ?? 0;
+  document.getElementById('stat-deferred').textContent = q.deferred ?? 0;
+  document.getElementById('stat-failed').textContent = q.failed ?? 0;
+  document.getElementById('stat-users').textContent = res.users_count ?? 0;
+
+  document.getElementById('info-hostname').textContent = s.hostname || '-';
+  document.getElementById('info-pid').textContent = s.pid || '-';
+
+  const relay = res.relay || {};
+  document.getElementById('info-relay').textContent = relay.enabled
+    ? `${relay.host}:${relay.port} (${relay.tls_mode})`
+    : 'Direct MX delivery';
+
+  // Features
+  const fg = document.getElementById('feature-grid');
+  const features = res.features || {};
+  fg.innerHTML = Object.entries(features).map(([k, v]) =>
+    `<span class="feature-chip ${v ? 'on' : 'off'}"><span class="chip-dot"></span>${k.toUpperCase()}</span>`
+  ).join('');
+
+  // Listeners
+  const lc = document.getElementById('listener-cards');
+  const listeners = res.listeners || [];
+  lc.innerHTML = listeners.map(l =>
+    `<div class="listener-card">
+      <div class="lc-name">${l.name}</div>
+      <div class="lc-detail">
+        <strong>${l.address}:${l.port}</strong><br>
+        TLS: ${l.tls_mode}<br>
+        Auth: ${l.require_auth ? 'Required' : 'No'}
+      </div>
+    </div>`
+  ).join('') || '<span style="color:var(--text-muted)">No listeners configured</span>';
+}
+
+/* ── Server Actions ────────────────────────────────────────────────── */
+async function serverAction(action) {
+  if (action === 'stop' && !confirm('Stop the server?')) return;
+  if (action === 'restart' && !confirm('Restart the server?')) return;
+  const res = await api(`/api/server/${action}`, { method: 'POST' });
+  toast(res.message || res.status, res.status === 'ok' ? 'success' : 'error');
+  setTimeout(loadDashboard, 2000);
+}
+
+/* ── Queue ──────────────────────────────────────────────────────────── */
+async function loadQueue(type) {
+  const res = await api(`/api/queue/list?type=${type}`);
+  const tb = document.getElementById('queue-table-body');
+  const msgs = res.data || [];
+  if (msgs.length === 0) {
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">No messages in queue</td></tr>';
+    return;
+  }
+  tb.innerHTML = msgs.map(m => {
+    const cls = m.queue === 'active' ? 'badge-active' : m.queue === 'deferred' ? 'badge-deferred' : 'badge-failed';
+    const rcpts = (m.recipients || []).join(', ');
+    return `<tr>
+      <td style="font-family:var(--mono);font-size:.75rem" title="${m.msg_id || ''}">${shortId(m.msg_id || '')}</td>
+      <td>${m.sender || '-'}</td>
+      <td title="${rcpts}">${rcpts.length > 30 ? rcpts.slice(0, 30) + '...' : rcpts}</td>
+      <td><span class="badge ${cls}">${m.queue}</span></td>
+      <td>${m.retry_count || 0}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.last_error || ''}">${m.last_error || '-'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteMessage('${m.msg_id}')">Delete</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function flushQueue() {
+  if (!confirm('Delete ALL messages from active and deferred queues?')) return;
+  const res = await api('/api/queue/flush', { method: 'POST' });
+  toast(`Flushed ${res.flushed || 0} messages`, 'success');
+  loadQueue('all');
+  loadDashboard();
+}
+
+async function purgeFailedQueue() {
+  if (!confirm('Delete all permanently failed messages?')) return;
+  const res = await api('/api/queue/purge-failed', { method: 'POST' });
+  toast(`Purged ${res.purged || 0} failed messages`, 'success');
+  loadQueue('all');
+  loadDashboard();
+}
+
+async function deleteMessage(id) {
+  if (!confirm(`Delete message ${id}?`)) return;
+  const res = await api('/api/queue/delete', { method: 'POST', body: JSON.stringify({ msg_id: id }) });
+  toast(res.message || 'Deleted', res.status === 'ok' ? 'success' : 'error');
+  loadQueue('all');
+  loadDashboard();
+}
+
+/* ── Users ──────────────────────────────────────────────────────────── */
+async function loadUsers() {
+  const res = await api('/api/users');
+  const tb = document.getElementById('users-table-body');
+  const users = res.data || [];
+  if (users.length === 0) {
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">No users configured</td></tr>';
+    return;
+  }
+  tb.innerHTML = users.map(u => {
+    const badge = u.enabled !== false ? 'badge-enabled' : 'badge-disabled';
+    const statusText = u.enabled !== false ? 'Enabled' : 'Disabled';
+    return `<tr>
+      <td style="font-weight:600">${u.username}</td>
+      <td>${u.email || '-'}</td>
+      <td>${u.display_name || '-'}</td>
+      <td><span class="badge ${badge}">${statusText}</span></td>
+      <td>${shortDate(u.created_at)}</td>
+      <td>${shortDate(u.last_login)}</td>
+      <td>
+        <div class="btn-group">
+          <button class="btn btn-outline btn-sm" onclick="showEditUserModal('${u.username}','${u.email || ''}','${u.display_name || ''}',${u.enabled !== false})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteUser('${u.username}')">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function showAddUserModal() {
+  ['new-user-name','new-user-pass','new-user-email','new-user-display'].forEach(id => document.getElementById(id).value = '');
+  openModal('modal-add-user');
+}
+
+async function addUser() {
+  const data = {
+    username: document.getElementById('new-user-name').value.trim(),
+    password: document.getElementById('new-user-pass').value,
+    email: document.getElementById('new-user-email').value.trim(),
+    display_name: document.getElementById('new-user-display').value.trim(),
+  };
+  if (!data.username || !data.password) { toast('Username and password are required', 'error'); return; }
+  const res = await api('/api/users', { method: 'POST', body: JSON.stringify(data) });
+  toast(res.message, res.status === 'ok' ? 'success' : 'error');
+  if (res.status === 'ok') { closeModal('modal-add-user'); loadUsers(); loadDashboard(); }
+}
+
+function showEditUserModal(username, email, displayName, enabled) {
+  document.getElementById('edit-user-name').value = username;
+  document.getElementById('edit-user-email').value = email;
+  document.getElementById('edit-user-display').value = displayName;
+  document.getElementById('edit-user-enabled').value = String(enabled);
+  document.getElementById('edit-user-pass').value = '';
+  openModal('modal-edit-user');
+}
+
+async function saveEditUser() {
+  const username = document.getElementById('edit-user-name').value;
+  const data = {
+    email: document.getElementById('edit-user-email').value.trim(),
+    display_name: document.getElementById('edit-user-display').value.trim(),
+    enabled: document.getElementById('edit-user-enabled').value === 'true',
+  };
+  let res = await api(`/api/users/${username}`, { method: 'PUT', body: JSON.stringify(data) });
+  const newPass = document.getElementById('edit-user-pass').value;
+  if (newPass) {
+    const pr = await api(`/api/users/${username}/password`, { method: 'POST', body: JSON.stringify({ password: newPass }) });
+    if (pr.status !== 'ok') { toast(pr.message, 'error'); return; }
+  }
+  toast(res.message || 'Updated', res.status === 'ok' ? 'success' : 'error');
+  if (res.status === 'ok') { closeModal('modal-edit-user'); loadUsers(); }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  const res = await api(`/api/users/${username}`, { method: 'DELETE' });
+  toast(res.message, res.status === 'ok' ? 'success' : 'error');
+  loadUsers();
+  loadDashboard();
+}
+
+/* ── Domains ───────────────────────────────────────────────────────── */
+async function loadDomains() {
+  const res = await api('/api/domains');
+  const d = res.data || {};
+  ['local', 'relay', 'blocked'].forEach(type => {
+    const list = d[type] || [];
+    const el = document.getElementById(`${type}-domains-list`);
+    if (list.length === 0) {
+      el.innerHTML = '<span style="color:var(--text-muted);font-size:.85rem">None configured</span>';
+    } else {
+      el.innerHTML = list.map(domain =>
+        `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #eef5ee">
+          <span style="font-size:.85rem">${domain}</span>
+          <button class="btn btn-danger btn-sm" onclick="removeDomain('${domain}','${type}')" style="padding:3px 8px;font-size:.7rem">Remove</button>
+        </div>`
+      ).join('');
+    }
+  });
+}
+
+function showAddDomainModal() {
+  document.getElementById('new-domain-name').value = '';
+  document.getElementById('new-domain-type').value = 'local';
+  openModal('modal-add-domain');
+}
+
+async function addDomain() {
+  const data = {
+    domain: document.getElementById('new-domain-name').value.trim(),
+    type: document.getElementById('new-domain-type').value,
+  };
+  if (!data.domain) { toast('Domain is required', 'error'); return; }
+  const res = await api('/api/domains', { method: 'POST', body: JSON.stringify(data) });
+  toast(res.message, res.status === 'ok' ? 'success' : 'error');
+  if (res.status === 'ok') { closeModal('modal-add-domain'); loadDomains(); }
+}
+
+async function removeDomain(domain, type) {
+  if (!confirm(`Remove "${domain}" from ${type} domains?`)) return;
+  const res = await api(`/api/domains/${domain}?type=${type}`, { method: 'DELETE' });
+  toast(res.message, res.status === 'ok' ? 'success' : 'error');
+  loadDomains();
+}
+
+/* ── Config ────────────────────────────────────────────────────────── */
+async function loadConfig() {
+  const res = await api('/api/config');
+  document.getElementById('config-path').textContent = res.path || '';
+  document.getElementById('config-viewer').textContent = JSON.stringify(res.data || {}, null, 2);
+}
+
+/* ── Logs ──────────────────────────────────────────────────────────── */
+async function loadLogs() {
+  const res = await api('/api/logs?lines=100');
+  const viewer = document.getElementById('log-viewer');
+  const lines = res.data || [];
+  if (lines.length === 0) {
+    viewer.innerHTML = '<span style="color:#666">No log entries found</span>';
+    return;
+  }
+  viewer.innerHTML = lines.map(line => {
+    let cls = 'log-info';
+    if (/error/i.test(line)) cls = 'log-error';
+    else if (/warn/i.test(line)) cls = 'log-warning';
+    return `<span class="${cls}">${line.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+  }).join('\n');
+  viewer.scrollTop = viewer.scrollHeight;
+}
+
+document.getElementById('auto-refresh-logs').addEventListener('change', function() {
+  if (this.checked) {
+    logInterval = setInterval(loadLogs, 5000);
+  } else {
+    clearInterval(logInterval);
+    logInterval = null;
+  }
+});
+
+/* ── Init ──────────────────────────────────────────────────────────── */
+loadDashboard();
+setInterval(loadDashboard, 10000);
+</script>
+</body>
+</html>
