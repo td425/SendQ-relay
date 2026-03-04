@@ -1,6 +1,6 @@
 # SendQ-MTA
 
-Enterprise-grade Mail Transfer Agent for Linux. High-performance async SMTP server with relay support, DKIM/SPF/DMARC authentication, persistent queue, connection pooling, and rate limiting.
+Enterprise-grade Mail Transfer Agent for Linux. High-performance async SMTP server with relay support, DKIM/SPF/DMARC authentication, persistent queue, connection pooling, rate limiting, and a built-in web management dashboard.
 
 ## Features
 
@@ -13,8 +13,10 @@ Enterprise-grade Mail Transfer Agent for Linux. High-performance async SMTP serv
 - **DMARC Enforcement** — Policy-based reject/quarantine/tag on alignment failures
 - **TLS** — STARTTLS (ports 25, 587) and implicit TLS (port 465), TLS 1.2+ enforced
 - **Rate Limiting** — Per-IP, per-domain, per-user, and global rate controls
-- **User Management** — CLI-based user CRUD with Argon2/bcrypt password hashing
+- **User Management** — CLI and web-based user CRUD with Argon2/bcrypt password hashing
+- **Web Dashboard** — Full management UI with realtime meters, log viewer, health checks, relay/failover management, feature toggles, and configuration editor
 - **YAML Configuration** — Single config file for all settings, hot-reloadable (SIGHUP)
+- **Self Health Check** — Automated checks for ports, TLS certificates, DNS, relay connectivity, outbound delivery, and queue directories
 - **Prometheus Metrics** — Built-in metrics exporter for monitoring
 - **Systemd Integration** — Hardened service unit with security policies
 
@@ -37,7 +39,43 @@ sendq-mta generate-dkim -d example.com
 # Validate and start
 sendq-mta validate-config
 sudo systemctl enable --now sendq-mta
+
+# Launch the web dashboard
+sendq-mta dashboard
 ```
+
+## Web Dashboard
+
+SendQ-MTA ships with a built-in web management dashboard for full control over the mail server.
+
+```bash
+# Start the dashboard (default: http://0.0.0.0:8225)
+sendq-mta dashboard
+
+# Custom host and port
+sendq-mta dashboard -H 127.0.0.1 -p 9000
+```
+
+Install the dashboard dependency:
+
+```bash
+pip install 'sendq-mta[dashboard]'
+```
+
+### Dashboard Panels
+
+- **Dashboard** — Realtime meters showing active, deferred, and failed queue counts; server status; listener overview; feature status chips
+- **Queue** — Browse, filter, and delete queued messages across active/deferred/failed queues; flush entire queue; purge failed messages
+- **Users** — Full user CRUD: add, edit, delete users; change passwords; set quotas and send limits; enable/disable accounts
+- **Domains** — Manage local, relay, and blocked domains
+- **Relay & Failover** — Configure primary SMTP relay settings (host, port, TLS, auth); add/edit/remove failover relays; test relay connectivity; toggle relay on/off
+- **Configuration** — Section-by-section config editor with auto-generated forms; edit any config key; changes auto-saved and hot-reloaded
+- **Logs** — Realtime log viewer with filtering by level, search text, IP from, IP to, mail from, mail to; sortable ascending/descending; auto-refresh
+- **Health Check** — 9 automated infrastructure checks: server process, listener ports, queue directories, TLS certificate expiry, relay connectivity, DNS resolution, log file writability, config validation, outbound port 25 reachability
+
+### Feature Toggles
+
+Toggle DKIM, SPF, DMARC, and rate limiting on/off directly from the dashboard. Changes take effect immediately via hot-reload.
 
 ## CLI Reference
 
@@ -50,6 +88,7 @@ sendq-mta stop               # Stop the server
 sendq-mta restart             # Restart the server
 sendq-mta status              # Show server status
 sendq-mta reload              # Reload config (SIGHUP)
+sendq-mta dashboard           # Launch web management dashboard
 ```
 
 ### User Management
@@ -80,7 +119,8 @@ sendq-mta remove-domain example.com          # Remove domain
 ```bash
 sendq-mta queue-status              # Show queue counts
 sendq-mta queue-status -v           # Show all queued messages
-sendq-mta flush-queue               # Retry all deferred messages now
+sendq-mta flush-queue               # Delete all messages from active & deferred queues
+sendq-mta flush-queue -y            # Delete without confirmation prompt
 sendq-mta delete-msg <msg-id>       # Delete specific message
 sendq-mta purge-failed              # Delete all permanently failed messages
 ```
@@ -102,6 +142,13 @@ sendq-mta generate-dkim -d example.com -s mail2025   # Custom selector
 sendq-mta generate-dkim -d example.com -b 4096       # 4096-bit key
 ```
 
+### Testing
+
+```bash
+sendq-mta test-send --to user@example.com            # Send a test email
+sendq-mta test-send --to user@example.com -p 587     # Via submission port
+```
+
 ## Configuration
 
 The main configuration file is at `/etc/sendq-mta/sendq-mta.yml`. Key sections:
@@ -119,6 +166,12 @@ relay:
   tls_mode: "starttls"        # starttls | implicit | none
   tls_verify: true
   connection_pool_size: 20
+  failover:
+    - host: "backup-smtp.provider.com"
+      port: 587
+      username: "backup-user"
+      password: "backup-pass"
+      tls_mode: "starttls"
 ```
 
 ### Listeners
@@ -164,23 +217,46 @@ See the full [config/sendq-mta.yml](config/sendq-mta.yml) for all options.
 ## Architecture
 
 ```
-Client  ──>  [SMTP Listener]  ──>  [Auth + SPF + Rate Limit]
-                                          │
+Client  -->  [SMTP Listener]  -->  [Auth + SPF + Rate Limit]
+                                          |
                                           v
                                     [DKIM Signing]
-                                          │
+                                          |
                                           v
                                   [Persistent Queue]
-                                          │
-                                   ┌──────┴──────┐
+                                          |
+                                   +------+------+
                                    v              v
                             [Relay Mode]    [Direct MX]
                             (Smarthost)     (DNS Lookup)
-                                   │              │
+                                   |              |
                                    v              v
-                              [Connection Pool → Delivery Workers]
-                                          │
+                              [Connection Pool -> Delivery Workers]
+                                          |
                                    Success / Retry / Bounce
+
+Web Dashboard (port 8225)
+   |
+   +-- REST API --> Config, Queue, Users, Domains, Relay, Logs, Health
+```
+
+## Installation
+
+### From source
+
+```bash
+git clone https://github.com/sendq-mta/sendq-mta.git
+cd sendq-mta
+pip install -e '.[full]'
+```
+
+### Optional extras
+
+```bash
+pip install 'sendq-mta[dkim]'       # DKIM signing support
+pip install 'sendq-mta[spf]'        # SPF checking support
+pip install 'sendq-mta[dashboard]'  # Web management dashboard (Flask)
+pip install 'sendq-mta[full]'       # All optional dependencies
 ```
 
 ## Requirements
@@ -188,6 +264,14 @@ Client  ──>  [SMTP Listener]  ──>  [Auth + SPF + Rate Limit]
 - Linux (systemd)
 - Python 3.11+
 - TLS certificate (for STARTTLS/SMTPS)
+
+## Documentation
+
+A comprehensive PDF documentation covering installation, configuration, all CLI commands, troubleshooting, and FAQ is available. Generate it with:
+
+```bash
+python generate_docs.py
+```
 
 ## Author
 
