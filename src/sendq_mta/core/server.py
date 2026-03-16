@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import ssl
+import warnings
 from typing import Any, Callable
 
 from aiosmtpd.controller import Controller
@@ -288,12 +289,26 @@ class MTAServer:
                 # gate (which may not detect implicit-TLS sessions).
                 kwargs["auth_require_tls"] = tls_mode == "starttls"
 
+                if tls_mode == "none":
+                    logger.warning(
+                        "Listener '%s' on port %d requires AUTH but has no TLS — "
+                        "credentials will be sent in plaintext!",
+                        name, port,
+                    )
+
             if tls_mode == "implicit" and ssl_context:
                 kwargs["ssl_context"] = ssl_context
             elif tls_mode == "starttls" and ssl_context:
                 kwargs["tls_context"] = ssl_context
 
-            controller = Controller(**kwargs)
+            # Suppress aiosmtpd's false-positive warning for implicit TLS
+            # (connection is already encrypted, auth_require_tls=False is correct)
+            if tls_mode == "implicit" and require_auth:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message="Requiring AUTH while not requiring TLS")
+                    controller = Controller(**kwargs)
+            else:
+                controller = Controller(**kwargs)
             self.controllers.append(controller)
             logger.info(
                 "Configured listener '%s' on %s:%d (tls=%s, auth=%s)",
