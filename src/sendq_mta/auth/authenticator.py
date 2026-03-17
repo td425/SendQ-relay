@@ -94,6 +94,10 @@ class Authenticator:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         # Restrict permissions on users file
         os.chmod(self._users_file, 0o600)
+        try:
+            self._users_file_mtime = os.path.getmtime(self._users_file)
+        except OSError:
+            self._users_file_mtime = 0.0
         logger.info("Saved %d users to %s", len(self._users), self._users_file)
 
     def hash_password(self, password: str) -> str:
