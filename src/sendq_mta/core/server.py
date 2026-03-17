@@ -10,7 +10,7 @@ import warnings
 from typing import Any, Callable
 
 from aiosmtpd.controller import Controller
-from aiosmtpd.smtp import SMTP as SMTPServer, Envelope, Session
+from aiosmtpd.smtp import SMTP as SMTPServer, AuthResult, Envelope, Session
 
 from sendq_mta.core.config import Config, SNAKEOIL_CERT, SNAKEOIL_KEY, _generate_snakeoil
 from sendq_mta.auth.authenticator import Authenticator
@@ -174,7 +174,7 @@ class SendQAuthenticator:
 
     def __call__(
         self, server: SMTPServer, session: Session, envelope: Envelope, mechanism: str, auth_data: Any
-    ) -> Any:
+    ) -> AuthResult:
         try:
             if mechanism.upper() in ("PLAIN", "LOGIN"):
                 username = auth_data.login.decode() if isinstance(auth_data.login, bytes) else auth_data.login
@@ -182,15 +182,16 @@ class SendQAuthenticator:
                 if self._auth.authenticate(username, password):
                     session.authenticated = True
                     session.authenticated_user = username
+                    self._auth.record_login(username)
                     logger.info("AUTH success for user=%s", username)
-                    return True
+                    return AuthResult(success=True, auth_data=auth_data)
                 else:
                     logger.warning("AUTH failed for user=%s", username)
-                    return False
-            return False
+                    return AuthResult(success=False, handled=False)
+            return AuthResult(success=False, handled=False)
         except Exception:
             logger.exception("AUTH error")
-            return False
+            return AuthResult(success=False, handled=False)
 
 
 def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
@@ -383,6 +384,8 @@ class MTAServer:
         def _reload_handler():
             logger.info("SIGHUP received — reloading configuration")
             self.config.reload()
+            self.authenticator._load_users()
+            logger.info("Reloaded users after SIGHUP")
 
         loop.add_signal_handler(signal.SIGHUP, _reload_handler)
 

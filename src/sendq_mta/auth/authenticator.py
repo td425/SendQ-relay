@@ -58,6 +58,7 @@ class Authenticator:
         self._users_file = config.get("auth.users_file", "/etc/sendq-mta/users.yml")
         self._min_password_length = config.get("auth.min_password_length", 12)
         self._users: dict[str, dict[str, Any]] = {}
+        self._users_file_mtime: float = 0.0
 
         if self._backend == "internal":
             self._load_users()
@@ -79,6 +80,10 @@ class Authenticator:
             data = yaml.safe_load(f) or {}
 
         self._users = data.get("users", {})
+        try:
+            self._users_file_mtime = os.path.getmtime(self._users_file)
+        except OSError:
+            self._users_file_mtime = 0.0
         logger.info("Loaded %d users from %s", len(self._users), self._users_file)
 
     def _save_users(self) -> None:
@@ -131,8 +136,19 @@ class Authenticator:
             logger.error("Auth backend '%s' not yet implemented", self._backend)
             return False
 
+    def _check_reload(self) -> None:
+        """Reload users file if it has been modified on disk."""
+        try:
+            current_mtime = os.path.getmtime(self._users_file)
+            if current_mtime != self._users_file_mtime:
+                logger.info("Users file changed on disk, reloading")
+                self._load_users()
+        except OSError:
+            pass
+
     def _auth_internal(self, username: str, password: str) -> bool:
         """Authenticate against the internal users file."""
+        self._check_reload()
         user = self._users.get(username)
         if not user:
             return False
