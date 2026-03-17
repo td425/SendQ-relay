@@ -6,10 +6,11 @@ import logging
 import os
 import signal
 import ssl
+import warnings
 from typing import Any, Callable
 
 from aiosmtpd.controller import Controller
-from aiosmtpd.smtp import SMTP as SMTPServer, Envelope, Session
+from aiosmtpd.smtp import SMTP as SMTPServer, AuthResult, Envelope, Session
 
 from sendq_mta.core.config import Config, SNAKEOIL_CERT, SNAKEOIL_KEY, _generate_snakeoil
 from sendq_mta.auth.authenticator import Authenticator
@@ -173,7 +174,7 @@ class SendQAuthenticator:
 
     def __call__(
         self, server: SMTPServer, session: Session, envelope: Envelope, mechanism: str, auth_data: Any
-    ) -> Any:
+    ) -> AuthResult:
         try:
             if mechanism.upper() in ("PLAIN", "LOGIN"):
                 username = auth_data.login.decode() if isinstance(auth_data.login, bytes) else auth_data.login
@@ -181,15 +182,16 @@ class SendQAuthenticator:
                 if self._auth.authenticate(username, password):
                     session.authenticated = True
                     session.authenticated_user = username
+                    self._auth.record_login(username)
                     logger.info("AUTH success for user=%s", username)
-                    return True
+                    return AuthResult(success=True, auth_data=auth_data)
                 else:
                     logger.warning("AUTH failed for user=%s", username)
-                    return False
-            return False
+                    return AuthResult(success=False, handled=False)
+            return AuthResult(success=False, handled=False)
         except Exception:
             logger.exception("AUTH error")
-            return False
+            return AuthResult(success=False, handled=False)
 
 
 def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
@@ -288,12 +290,26 @@ class MTAServer:
                 # gate (which may not detect implicit-TLS sessions).
                 kwargs["auth_require_tls"] = tls_mode == "starttls"
 
+                if tls_mode == "none":
+                    logger.warning(
+                        "Listener '%s' on port %d requires AUTH but has no TLS — "
+                        "credentials will be sent in plaintext!",
+                        name, port,
+                    )
+
             if tls_mode == "implicit" and ssl_context:
                 kwargs["ssl_context"] = ssl_context
             elif tls_mode == "starttls" and ssl_context:
                 kwargs["tls_context"] = ssl_context
 
-            controller = Controller(**kwargs)
+            # Suppress aiosmtpd's false-positive warning for implicit TLS
+            # (connection is already encrypted, auth_require_tls=False is correct)
+            if tls_mode == "implicit" and require_auth:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message="Requiring AUTH while not requiring TLS")
+                    controller = Controller(**kwargs)
+            else:
+                controller = Controller(**kwargs)
             self.controllers.append(controller)
             logger.info(
                 "Configured listener '%s' on %s:%d (tls=%s, auth=%s)",
@@ -368,6 +384,8 @@ class MTAServer:
         def _reload_handler():
             logger.info("SIGHUP received — reloading configuration")
             self.config.reload()
+            self.authenticator._load_users()
+            logger.info("Reloaded users after SIGHUP")
 
         loop.add_signal_handler(signal.SIGHUP, _reload_handler)
 
