@@ -217,8 +217,10 @@ class QueueManager:
         """Worker coroutine that pulls messages from the queue and delivers."""
         # Import here to avoid circular imports
         from sendq_mta.transport.delivery import DeliveryEngine
+        from sendq_mta.auth.dkim import DKIMSigner
 
         engine = DeliveryEngine(self.config)
+        dkim_signer = DKIMSigner(self.config)
 
         logger.info("Delivery worker %d started", worker_id)
         while self._running:
@@ -231,6 +233,15 @@ class QueueManager:
 
             self._stats["active"] += 1
             msg.status = "delivering"
+
+            # DKIM-sign outbound messages before delivery
+            if dkim_signer.enabled and msg.sender:
+                sender_domain = msg.sender.rsplit("@", 1)[-1].lower() if "@" in msg.sender else ""
+                if sender_domain:
+                    msg.data = dkim_signer.sign(
+                        msg.data if isinstance(msg.data, bytes) else msg.data.encode("utf-8"),
+                        sender_domain,
+                    )
 
             try:
                 success = await engine.deliver(msg)

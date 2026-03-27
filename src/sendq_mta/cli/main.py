@@ -936,9 +936,33 @@ def dkim_generate(
     with open(dns_path, "w") as f:
         f.write(dns_record + "\n")
 
-    click.echo(f"\nDKIM key pair generated for {domain}:")
-    click.echo(f"  Private key: {key_path}")
-    click.echo(f"  DNS record:  {dns_path}")
+    # Auto-update config: enable DKIM, set key_file, add domain to signing_domains
+    config.set("dkim.enabled", True)
+    config.set("dkim.key_file", key_path)
+
+    signing_domains = config.get("dkim.signing_domains", [])
+    if domain not in signing_domains:
+        signing_domains.append(domain)
+        config.set("dkim.signing_domains", signing_domains)
+
+    config.set("dkim.selector", selector)
+
+    try:
+        config.save()
+        click.echo(f"\nDKIM key pair generated for {domain}:")
+        click.echo(f"  Private key:  {key_path}")
+        click.echo(f"  DNS record:   {dns_path}")
+        click.echo(f"  Config updated: {config.path}")
+        click.echo(f"\n  dkim.enabled = true")
+        click.echo(f"  dkim.key_file = {key_path}")
+        click.echo(f"  dkim.signing_domains = {signing_domains}")
+    except Exception as exc:
+        click.echo(f"\nDKIM key pair generated for {domain}:")
+        click.echo(f"  Private key: {key_path}")
+        click.echo(f"  DNS record:  {dns_path}")
+        click.echo(f"\n  WARNING: Could not auto-update config: {exc}", err=True)
+        click.echo(f"  Manually set dkim.enabled=true, dkim.key_file={key_path}", err=True)
+
     click.echo(f"\nAdd this DNS TXT record:")
     click.echo(f"  {dns_record}")
     click.echo()
