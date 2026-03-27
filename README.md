@@ -1,4 +1,4 @@
-# SendQ-MTA
+# SendQ-Relay
 
 Enterprise-grade Mail Transfer Agent for Linux. High-performance async SMTP server with relay support, DKIM/SPF/DMARC authentication, persistent queue, connection pooling, rate limiting, and a built-in web management dashboard.
 
