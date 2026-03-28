@@ -180,6 +180,14 @@ class DeliveryEngine:
 
                 for mx_host, _priority in mx_hosts:
                     try:
+                        _validate_relay_host(mx_host)
+                    except ValueError:
+                        logger.warning(
+                            "Skipping MX %s for %s — resolves to private/loopback",
+                            mx_host, domain,
+                        )
+                        continue
+                    try:
                         success = await self._send_smtp(
                             host=mx_host,
                             port=25,

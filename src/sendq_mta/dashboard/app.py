@@ -18,6 +18,7 @@ from flask import Flask, jsonify, render_template, request
 from sendq_mta.core.config import Config
 from sendq_mta.auth.authenticator import Authenticator
 from sendq_mta.queue.manager import _safe_msg_id
+from sendq_mta.transport.delivery import _validate_relay_host
 
 logger = logging.getLogger("sendq-mta.dashboard")
 
@@ -584,6 +585,10 @@ def api_test_relay():
     port = int(data.get("port", _config.get("relay.port", 587)))
     if not host:
         return jsonify({"status": "error", "message": "No relay host configured"}), 400
+    try:
+        _validate_relay_host(host)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
     result = _check_port(host, port, timeout=5.0)
     return jsonify({"status": "ok", "data": {"host": host, "port": port, **result}})
 
