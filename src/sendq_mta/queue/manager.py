@@ -167,51 +167,24 @@ class QueueManager:
 
         await loop.run_in_executor(None, _remove)
 
-    async def _move_to_deferred(self, msg: QueueMessage, error: str) -> None:
-        """Move message to deferred queue with updated retry info."""
-        retry_intervals = self.config.get(
-            "queue.retry_intervals", [60, 300, 900, 1800, 3600]
-        )
-        max_retries = self.config.get("queue.max_retries", 30)
-        max_age = self.config.get("queue.max_age", 432000)
-
-        msg.retry_count += 1
-        msg.last_error = error
-        msg.status = "deferred"
-
-        # Check if we've exceeded limits
-        age = time.time() - msg.created_at
-        if msg.retry_count >= max_retries or age >= max_age:
-            await self._move_to_failed(msg, error)
-            return
-
-        # Calculate next retry time
-        idx = min(msg.retry_count - 1, len(retry_intervals) - 1)
-        msg.next_retry = time.time() + retry_intervals[idx]
-
-        await self._remove_from_disk(msg.msg_id, self._queue_dir)
-        await self._write_to_disk(msg, self._deferred_dir)
-        self._stats["deferred"] += 1
-
-        logger.info(
-            "Deferred %s retry=%d next_in=%ds error=%s",
-            msg.msg_id,
-            msg.retry_count,
-            retry_intervals[idx],
-            error[:100],
-        )
-
     async def _move_to_failed(self, msg: QueueMessage, error: str) -> None:
-        """Move message to failed queue (permanent failure)."""
+        """Move message to failed queue. No retries — failures are final."""
         msg.status = "failed"
         msg.last_error = error
 
         await self._remove_from_disk(msg.msg_id, self._queue_dir)
-        await self._remove_from_disk(msg.msg_id, self._deferred_dir)
         await self._write_to_disk(msg, self._failed_dir)
         self._stats["failed"] += 1
 
-        logger.warning("Failed permanently %s error=%s", msg.msg_id, error[:200])
+        logger.warning(
+            "Failed %s from=%s rcpts=%d error=%s | totals: delivered=%d failed=%d",
+            msg.msg_id,
+            msg.sender,
+            len(msg.recipients),
+            error[:200],
+            self._stats["delivered"],
+            self._stats["failed"],
+        )
 
     async def _delivery_worker(self, worker_id: int) -> None:
         """Worker coroutine that pulls messages from the queue and delivers."""
@@ -250,64 +223,16 @@ class QueueManager:
                     self._stats["delivered"] += 1
                     logger.info("Delivered %s", msg.msg_id)
                 else:
-                    await self._move_to_deferred(msg, "Delivery returned failure")
+                    await self._move_to_failed(msg, "Delivery returned failure")
             except Exception as exc:
                 logger.exception("Delivery error for %s", msg.msg_id)
-                await self._move_to_deferred(msg, str(exc))
+                await self._move_to_failed(msg, str(exc))
             finally:
                 self._stats["active"] -= 1
                 self._known_ids.discard(msg.msg_id)
                 self._delivery_queue.task_done()
 
         logger.info("Delivery worker %d stopped", worker_id)
-
-    async def _deferred_scanner(self) -> None:
-        """Periodically scan deferred directory and re-enqueue ready messages."""
-        flush_interval = self.config.get("queue.flush_interval", 30)
-
-        while self._running:
-            await asyncio.sleep(flush_interval)
-            try:
-                await self._scan_deferred()
-            except Exception:
-                logger.exception("Error scanning deferred queue")
-
-    async def _scan_deferred(self) -> None:
-        """Scan deferred directory for messages ready for retry."""
-        loop = asyncio.get_event_loop()
-        now = time.time()
-
-        def _list_meta():
-            files = []
-            if os.path.isdir(self._deferred_dir):
-                for f in os.listdir(self._deferred_dir):
-                    if f.endswith(".meta.json"):
-                        files.append(os.path.join(self._deferred_dir, f))
-            return files
-
-        meta_files = await loop.run_in_executor(None, _list_meta)
-
-        for meta_path in meta_files:
-            try:
-                msg_id = os.path.basename(meta_path).replace(".meta.json", "")
-                data_path = os.path.join(self._deferred_dir, f"{msg_id}.eml")
-                if not os.path.exists(data_path):
-                    continue
-
-                msg = await loop.run_in_executor(
-                    None, QueueMessage.from_disk, meta_path, data_path
-                )
-
-                if msg.next_retry <= now:
-                    msg.status = "queued"
-                    # Move back to active queue
-                    await self._remove_from_disk(msg.msg_id, self._deferred_dir)
-                    await self._write_to_disk(msg, self._queue_dir)
-                    self._known_ids.add(msg.msg_id)
-                    await self._delivery_queue.put(msg)
-                    logger.info("Re-queued deferred message %s", msg.msg_id)
-            except Exception:
-                logger.exception("Error processing deferred message %s", meta_path)
 
     async def _load_existing_queue(self) -> None:
         """On startup, load any existing queued messages."""
@@ -352,11 +277,7 @@ class QueueManager:
             task = asyncio.create_task(self._delivery_worker(i))
             self._workers.append(task)
 
-        # Start deferred scanner
-        scanner = asyncio.create_task(self._deferred_scanner())
-        self._workers.append(scanner)
-
-        logger.info("Started %d delivery workers + deferred scanner", num_workers)
+        logger.info("Started %d delivery workers (no-retry mode)", num_workers)
 
     async def stop_workers(self) -> None:
         """Stop all delivery workers gracefully."""
@@ -392,42 +313,6 @@ class QueueManager:
             return messages
 
         return await loop.run_in_executor(None, _scan)
-
-    async def flush_queue(self) -> int:
-        """Force retry all deferred messages immediately."""
-        count = 0
-        loop = asyncio.get_event_loop()
-
-        def _list_deferred():
-            ids = []
-            if os.path.isdir(self._deferred_dir):
-                for f in os.listdir(self._deferred_dir):
-                    if f.endswith(".meta.json"):
-                        ids.append(f.replace(".meta.json", ""))
-            return ids
-
-        msg_ids = await loop.run_in_executor(None, _list_deferred)
-
-        for msg_id in msg_ids:
-            try:
-                meta_path = os.path.join(self._deferred_dir, f"{msg_id}.meta.json")
-                data_path = os.path.join(self._deferred_dir, f"{msg_id}.eml")
-                if os.path.exists(meta_path) and os.path.exists(data_path):
-                    msg = await loop.run_in_executor(
-                        None, QueueMessage.from_disk, meta_path, data_path
-                    )
-                    msg.next_retry = 0
-                    msg.status = "queued"
-                    await self._remove_from_disk(msg.msg_id, self._deferred_dir)
-                    await self._write_to_disk(msg, self._queue_dir)
-                    self._known_ids.add(msg.msg_id)
-                    await self._delivery_queue.put(msg)
-                    count += 1
-            except Exception:
-                logger.exception("Error flushing message %s", msg_id)
-
-        logger.info("Flushed %d deferred messages", count)
-        return count
 
     async def reload_active_queue(self) -> int:
         """Pick up new messages in the active queue dir (e.g. after CLI flush).

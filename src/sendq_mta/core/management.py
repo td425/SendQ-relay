@@ -94,7 +94,6 @@ class ManagementAPI:
             "status": self._cmd_status,
             "queue_status": self._cmd_queue_status,
             "queue_list": self._cmd_queue_list,
-            "queue_flush": self._cmd_queue_flush,
             "queue_delete": self._cmd_queue_delete,
             "queue_purge_failed": self._cmd_queue_purge_failed,
             "list_users": self._cmd_list_users,
@@ -132,15 +131,6 @@ class ManagementAPI:
                 m["queue"] = "active"
             messages.extend(active)
 
-        if queue_type in ("deferred", "all"):
-            deferred_dir = self.config.get(
-                "queue.deferred_directory", "/var/spool/sendq-mta/deferred"
-            )
-            deferred = await self.queue.get_queue_list(deferred_dir)
-            for m in deferred:
-                m["queue"] = "deferred"
-            messages.extend(deferred)
-
         if queue_type in ("failed", "all"):
             failed_dir = self.config.get(
                 "queue.failed_directory", "/var/spool/sendq-mta/failed"
@@ -151,10 +141,6 @@ class ManagementAPI:
             messages.extend(failed)
 
         return {"status": "ok", "data": messages}
-
-    async def _cmd_queue_flush(self, params: dict) -> dict:
-        count = await self.queue.flush_queue()
-        return {"status": "ok", "data": {"flushed": count}}
 
     async def _cmd_queue_delete(self, params: dict) -> dict:
         msg_id = params.get("msg_id", "")

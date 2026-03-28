@@ -334,17 +334,16 @@ def api_queue_list():
 
 @app.route("/api/queue/flush", methods=["POST"])
 def api_queue_flush():
-    q, d, _f = _all_queue_dirs()
+    q, _d, _f = _all_queue_dirs()
     count = 0
-    for directory in (q, d):
-        if os.path.isdir(directory):
-            for f in os.listdir(directory):
-                try:
-                    os.unlink(os.path.join(directory, f))
-                    if f.endswith(".meta.json"):
-                        count += 1
-                except OSError:
-                    pass
+    if os.path.isdir(q):
+        for f in os.listdir(q):
+            try:
+                os.unlink(os.path.join(q, f))
+                if f.endswith(".meta.json"):
+                    count += 1
+            except OSError:
+                pass
     return jsonify({"status": "ok", "flushed": count})
 
 

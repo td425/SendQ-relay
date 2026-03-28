@@ -579,48 +579,31 @@ def _print_queue_messages(messages: list[dict]) -> None:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
 @click.pass_context
 def queue_flush(ctx: click.Context, yes: bool) -> None:
-    """Delete all messages from active and deferred queues."""
+    """Delete all messages from the active queue."""
     config = _load_config(ctx)
     queue_dir = config.get("queue.directory", "/var/spool/sendq-mta/queue")
-    deferred_dir = config.get("queue.deferred_directory", "/var/spool/sendq-mta/deferred")
 
-    # Count messages in both directories
-    def _count_and_list(d: str):
-        files = []
-        if os.path.isdir(d):
-            files = os.listdir(d)
-        count = sum(1 for f in files if f.endswith(".meta.json"))
-        return count, files
+    files = []
+    if os.path.isdir(queue_dir):
+        files = os.listdir(queue_dir)
+    count = sum(1 for f in files if f.endswith(".meta.json"))
 
-    active_count, active_files = _count_and_list(queue_dir)
-    deferred_count, deferred_files = _count_and_list(deferred_dir)
-    total = active_count + deferred_count
-
-    if total == 0:
+    if count == 0:
         click.echo("Queue is already empty.")
         return
 
-    click.echo(f"  Active:   {active_count}")
-    click.echo(f"  Deferred: {deferred_count}")
+    click.echo(f"  Active: {count}")
 
     if not yes:
-        click.confirm(f"Delete all {total} messages from the queue?", abort=True)
+        click.confirm(f"Delete all {count} messages from the queue?", abort=True)
 
-    # Delete all files from active queue
-    for f in active_files:
+    for f in files:
         try:
             os.unlink(os.path.join(queue_dir, f))
         except OSError:
             pass
 
-    # Delete all files from deferred queue
-    for f in deferred_files:
-        try:
-            os.unlink(os.path.join(deferred_dir, f))
-        except OSError:
-            pass
-
-    click.echo(f"Flushed {total} messages from the queue.")
+    click.echo(f"Flushed {count} messages from the queue.")
 
 
 @cli.command("delete-msg")
