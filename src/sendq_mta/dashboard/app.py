@@ -79,14 +79,12 @@ def _require_api_key():
 
 @app.after_request
 def _security_headers(response):
-    """Add security headers and restrict CORS."""
+    """Add security headers and deny cross-origin requests."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Cache-Control"] = "no-store"
-    # Deny all cross-origin requests
-    response.headers["Access-Control-Allow-Origin"] = request.host_url.rstrip("/")
-    response.headers["Access-Control-Allow-Headers"] = "Authorization, X-API-Key, Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE"
+    # No Access-Control-Allow-Origin header = browsers enforce same-origin
+    # policy by default, which is the most restrictive setting.
     return response
 
 

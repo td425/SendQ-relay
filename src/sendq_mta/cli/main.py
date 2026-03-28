@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -12,6 +13,7 @@ import yaml
 
 from sendq_mta import __version__, __app_name__
 from sendq_mta.core.config import Config
+from sendq_mta.queue.manager import _safe_msg_id
 
 
 def _load_config(ctx: click.Context) -> Config:
@@ -627,6 +629,12 @@ def queue_flush(ctx: click.Context, yes: bool) -> None:
 @click.pass_context
 def queue_delete_msg(ctx: click.Context, msg_id: str, yes: bool) -> None:
     """Delete a specific message from the queue."""
+    try:
+        _safe_msg_id(msg_id)
+    except ValueError:
+        click.echo(f"Invalid message ID: {msg_id}", err=True)
+        ctx.exit(1)
+
     if not yes:
         click.confirm(f"Delete message {msg_id}?", abort=True)
 
@@ -904,6 +912,15 @@ def dkim_generate(
 
     config = _load_config(ctx)
     selector = selector or config.get("dkim.selector", "sendq")
+
+    # Validate domain and selector to prevent path traversal
+    _hostname_re = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
+    if not _hostname_re.match(domain) or ".." in domain:
+        click.echo(f"Invalid domain name: {domain}", err=True)
+        ctx.exit(1)
+    if not _hostname_re.match(selector) or ".." in selector:
+        click.echo(f"Invalid selector: {selector}", err=True)
+        ctx.exit(1)
 
     os.makedirs(output_dir, exist_ok=True)
 
