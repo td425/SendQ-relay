@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sendq_mta.core.config import Config
+from sendq_mta.queue.manager import _safe_msg_id
 from sendq_mta.queue.manager import QueueManager
 from sendq_mta.auth.authenticator import Authenticator
 from sendq_mta.core.rate_limiter import RateLimiter
@@ -159,6 +160,10 @@ class ManagementAPI:
         msg_id = params.get("msg_id", "")
         if not msg_id:
             return {"status": "error", "message": "msg_id required"}
+        try:
+            _safe_msg_id(msg_id)
+        except ValueError:
+            return {"status": "error", "message": "Invalid message ID"}
         result = await self.queue.delete_message(msg_id)
         return {"status": "ok" if result else "error", "data": {"deleted": result}}
 

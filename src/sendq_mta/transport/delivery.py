@@ -29,6 +29,23 @@ _BLOCKED_NETWORKS = [
 ]
 
 
+def _check_addr_blocked(addr: ipaddress.IPv4Address | ipaddress.IPv6Address, host: str) -> None:
+    """Raise ``ValueError`` if *addr* is private/loopback.
+
+    Handles IPv6-mapped IPv4 addresses (e.g. ``::ffff:127.0.0.1``) by
+    extracting the underlying IPv4 address before checking.
+    """
+    # Unwrap IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+
+    for net in _BLOCKED_NETWORKS:
+        if addr in net:
+            raise ValueError(
+                f"Relay host {host} resolves to private/loopback address {addr}"
+            )
+
+
 def _validate_relay_host(host: str) -> None:
     """Reject relay hosts that resolve to private or loopback addresses.
 
@@ -37,11 +54,7 @@ def _validate_relay_host(host: str) -> None:
     # First check if host is already a literal IP
     try:
         addr = ipaddress.ip_address(host)
-        for net in _BLOCKED_NETWORKS:
-            if addr in net:
-                raise ValueError(
-                    f"Relay host {host} resolves to private/loopback address"
-                )
+        _check_addr_blocked(addr, host)
         return
     except ValueError as exc:
         if "private/loopback" in str(exc):
@@ -52,12 +65,7 @@ def _validate_relay_host(host: str) -> None:
         results = _socket.getaddrinfo(host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM)
         for family, _type, _proto, _canonname, sockaddr in results:
             addr = ipaddress.ip_address(sockaddr[0])
-            for net in _BLOCKED_NETWORKS:
-                if addr in net:
-                    raise ValueError(
-                        f"Relay host {host} resolves to private/loopback "
-                        f"address {addr}"
-                    )
+            _check_addr_blocked(addr, host)
     except _socket.gaierror:
         pass  # DNS resolution failed — let the connection attempt handle it
 
