@@ -29,6 +29,15 @@ from sendq_mta.core.config import Config
 
 logger = logging.getLogger("sendq-mta.auth")
 
+# Pre-computed dummy hash used for constant-time auth responses.
+# When a user does not exist we still run verify_password() against this
+# hash so that the response time is indistinguishable from a real lookup.
+_DUMMY_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$"
+    "AAAAAAAAAAAAAAAAAAAAAA$"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+)
+
 
 def _hash_sha512(password: str, salt: str | None = None) -> str:
     """SHA-512 with salt fallback."""
@@ -63,8 +72,10 @@ class Authenticator:
         if self._backend == "internal":
             self._load_users()
 
-        # Initialize argon2 hasher
-        if self._hash_algo == "argon2" and ARGON2_AVAILABLE:
+        # Always initialise the argon2 hasher when the library is available
+        # so that it can serve as a secure fallback if the configured
+        # algorithm (e.g. SHA-512) has been deprecated.
+        if ARGON2_AVAILABLE:
             self._argon2 = PasswordHasher()
         else:
             self._argon2 = None
@@ -101,14 +112,30 @@ class Authenticator:
         logger.info("Saved %d users to %s", len(self._users), self._users_file)
 
     def hash_password(self, password: str) -> str:
-        """Hash a password using the configured algorithm."""
+        """Hash a password using the configured algorithm.
+
+        SHA-512 is no longer accepted for new hashes.  Existing SHA-512
+        hashes are still verifiable (see ``verify_password``), but new
+        passwords always use argon2 or bcrypt.
+        """
         if self._hash_algo == "argon2" and self._argon2:
             return self._argon2.hash(password)
         elif self._hash_algo == "bcrypt" and BCRYPT_AVAILABLE:
             salt = _bcrypt.gensalt(rounds=12)
             return _bcrypt.hashpw(password.encode(), salt).decode()
+        elif self._argon2:
+            # Fallback: prefer argon2 over insecure SHA-512
+            logger.warning("Configured hash '%s' unavailable; falling back to argon2", self._hash_algo)
+            return self._argon2.hash(password)
+        elif BCRYPT_AVAILABLE:
+            logger.warning("Configured hash '%s' unavailable; falling back to bcrypt", self._hash_algo)
+            salt = _bcrypt.gensalt(rounds=12)
+            return _bcrypt.hashpw(password.encode(), salt).decode()
         else:
-            return _hash_sha512(password)
+            raise RuntimeError(
+                "No secure password hashing library available. "
+                "Install argon2-cffi or bcrypt."
+            )
 
     def verify_password(self, password: str, hashed: str) -> bool:
         """Verify a password against its hash."""
@@ -151,16 +178,41 @@ class Authenticator:
             pass
 
     def _auth_internal(self, username: str, password: str) -> bool:
-        """Authenticate against the internal users file."""
+        """Authenticate against the internal users file.
+
+        Always performs a password-hash comparison (even for non-existent
+        or disabled users) so that response timing does not leak whether
+        a username is valid.
+        """
         self._check_reload()
         user = self._users.get(username)
+
         if not user:
+            # Constant-time: run the hash anyway against a dummy value
+            self.verify_password(password, _DUMMY_HASH)
             return False
+
         if not user.get("enabled", True):
             logger.warning("Login attempt for disabled user: %s", username)
+            self.verify_password(password, _DUMMY_HASH)
             return False
+
         stored_hash = user.get("password_hash", "")
-        return self.verify_password(password, stored_hash)
+        result = self.verify_password(password, stored_hash)
+
+        # Auto-rehash legacy SHA-512 passwords on successful login
+        if result and stored_hash.startswith("$sha512$"):
+            try:
+                new_hash = self.hash_password(password)
+                self._users[username]["password_hash"] = new_hash
+                self._save_users()
+                logger.info(
+                    "Auto-rehashed SHA-512 password for user '%s'", username
+                )
+            except Exception:
+                logger.exception("Failed to auto-rehash password for '%s'", username)
+
+        return result
 
     # --- User CRUD Operations ---
 

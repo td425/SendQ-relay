@@ -29,11 +29,13 @@ class SendQHandler:
         queue_manager: QueueManager,
         authenticator: Authenticator,
         rate_limiter: RateLimiter,
+        require_auth: bool = False,
     ):
         self.config = config
         self.queue = queue_manager
         self.auth = authenticator
         self.rate_limiter = rate_limiter
+        self._require_auth = require_auth
 
     def _is_trusted_network(self, peer_ip: str) -> bool:
         """Check if peer IP is within configured trusted networks."""
@@ -56,6 +58,7 @@ class SendQHandler:
         self, server: SMTPServer, session: Session, envelope: Envelope, hostname: str, responses: list[str]
     ) -> list[str]:
         session.host_name = hostname
+        session._listener_require_auth = self._require_auth
         return responses
 
     async def handle_MAIL(
@@ -250,12 +253,13 @@ class MTAServer:
         self.rate_limiter = RateLimiter(config)
         self._running = False
 
-    def _create_handler(self) -> SendQHandler:
+    def _create_handler(self, require_auth: bool = False) -> SendQHandler:
         return SendQHandler(
             config=self.config,
             queue_manager=self.queue_manager,
             authenticator=self.authenticator,
             rate_limiter=self.rate_limiter,
+            require_auth=require_auth,
         )
 
     def _setup_listeners(self) -> None:
@@ -263,7 +267,6 @@ class MTAServer:
         listeners = self.config.get("listeners", [])
         ssl_context = _build_ssl_context(self.config)
         auth_bridge = SendQAuthenticator(self.authenticator)
-        handler = self._create_handler()
         hostname = self.config.get("server.hostname", "localhost")
 
         for listener in listeners:
@@ -272,6 +275,10 @@ class MTAServer:
             port = listener.get("port", 25)
             tls_mode = listener.get("tls_mode", "none")
             require_auth = listener.get("require_auth", False)
+
+            # Per-listener handler so each listener can propagate its
+            # require_auth flag to SMTP sessions.
+            handler = self._create_handler(require_auth=require_auth)
 
             kwargs: dict[str, Any] = {
                 "handler": handler,

@@ -1,7 +1,9 @@
 """Outbound delivery engine — relay and direct MX delivery."""
 
 import asyncio
+import ipaddress
 import logging
+import socket as _socket
 import ssl
 import time
 from typing import Any
@@ -13,6 +15,51 @@ from sendq_mta.core.config import Config
 from sendq_mta.transport.connection_pool import ConnectionPool
 
 logger = logging.getLogger("sendq-mta.delivery")
+
+# Private / loopback networks that must never be used as relay targets.
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_relay_host(host: str) -> None:
+    """Reject relay hosts that resolve to private or loopback addresses.
+
+    Raises ``ValueError`` if the host is unsafe.
+    """
+    # First check if host is already a literal IP
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(
+                    f"Relay host {host} resolves to private/loopback address"
+                )
+        return
+    except ValueError as exc:
+        if "private/loopback" in str(exc):
+            raise
+        # Not a literal IP — resolve it below
+
+    try:
+        results = _socket.getaddrinfo(host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM)
+        for family, _type, _proto, _canonname, sockaddr in results:
+            addr = ipaddress.ip_address(sockaddr[0])
+            for net in _BLOCKED_NETWORKS:
+                if addr in net:
+                    raise ValueError(
+                        f"Relay host {host} resolves to private/loopback "
+                        f"address {addr}"
+                    )
+    except _socket.gaierror:
+        pass  # DNS resolution failed — let the connection attempt handle it
 
 
 class DeliveryEngine:
@@ -51,6 +98,13 @@ class DeliveryEngine:
         """Deliver through configured SMTP relay / smarthost."""
         host = relay_cfg.get("host", "")
         port = relay_cfg.get("port", 587)
+
+        # SSRF protection: reject relay hosts that resolve to private IPs
+        try:
+            _validate_relay_host(host)
+        except ValueError as exc:
+            logger.error("Relay host rejected: %s", exc)
+            return False
         username = relay_cfg.get("username", "")
         password = relay_cfg.get("password", "")
         tls_mode = relay_cfg.get("tls_mode", "starttls")
@@ -76,6 +130,11 @@ class DeliveryEngine:
         # Try failover relays
         for failover in relay_cfg.get("failover", []):
             if not failover.get("host"):
+                continue
+            try:
+                _validate_relay_host(failover["host"])
+            except ValueError as exc:
+                logger.warning("Failover relay rejected: %s", exc)
                 continue
             try:
                 success = await self._send_smtp(
