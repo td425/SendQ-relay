@@ -879,22 +879,35 @@ def api_health():
 # ── Run ────────────────────────────────────────────────────────────────────
 
 def run_dashboard(config: Config, host: str = "127.0.0.1", port: int = 8225):
-    """Start the dashboard web server."""
-    init_app(config)
+    """Start the dashboard web server.
+
+    If no API key is configured, one is auto-generated on first launch,
+    saved to the config file, and printed to the console.
+    """
+    import secrets as _secrets
 
     api_key = config.get("management_api.http.api_key", "")
-    if not api_key:
-        logger.error(
-            "Dashboard requires management_api.http.api_key to be set in config. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
-        )
-        raise SystemExit(
-            "FATAL: management_api.http.api_key is not configured. "
-            "The dashboard refuses to start without authentication."
-        )
-    if len(api_key) < 32:
-        raise SystemExit(
-            "FATAL: management_api.http.api_key must be at least 32 characters."
-        )
 
+    if not api_key or len(api_key) < 32:
+        api_key = _secrets.token_urlsafe(48)
+        config.set("management_api.http.api_key", api_key)
+        try:
+            config.save()
+            logger.info("Auto-generated dashboard API key and saved to config")
+        except Exception as exc:
+            logger.warning("Could not save auto-generated API key to config: %s", exc)
+
+        print()
+        print("=" * 64)
+        print("  Dashboard API key (auto-generated, saved to config):")
+        print()
+        print(f"  {api_key}")
+        print()
+        print("  Use it in requests via:")
+        print(f'    Authorization: Bearer {api_key}')
+        print(f"    or X-API-Key: {api_key}")
+        print("=" * 64)
+        print()
+
+    init_app(config)
     app.run(host=host, port=port, debug=False)
