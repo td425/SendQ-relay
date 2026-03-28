@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sendq_mta.core.config import Config
+from sendq_mta.queue.manager import _safe_msg_id
 from sendq_mta.queue.manager import QueueManager
 from sendq_mta.auth.authenticator import Authenticator
 from sendq_mta.core.rate_limiter import RateLimiter
@@ -93,7 +94,6 @@ class ManagementAPI:
             "status": self._cmd_status,
             "queue_status": self._cmd_queue_status,
             "queue_list": self._cmd_queue_list,
-            "queue_flush": self._cmd_queue_flush,
             "queue_delete": self._cmd_queue_delete,
             "queue_purge_failed": self._cmd_queue_purge_failed,
             "list_users": self._cmd_list_users,
@@ -131,15 +131,6 @@ class ManagementAPI:
                 m["queue"] = "active"
             messages.extend(active)
 
-        if queue_type in ("deferred", "all"):
-            deferred_dir = self.config.get(
-                "queue.deferred_directory", "/var/spool/sendq-mta/deferred"
-            )
-            deferred = await self.queue.get_queue_list(deferred_dir)
-            for m in deferred:
-                m["queue"] = "deferred"
-            messages.extend(deferred)
-
         if queue_type in ("failed", "all"):
             failed_dir = self.config.get(
                 "queue.failed_directory", "/var/spool/sendq-mta/failed"
@@ -151,14 +142,14 @@ class ManagementAPI:
 
         return {"status": "ok", "data": messages}
 
-    async def _cmd_queue_flush(self, params: dict) -> dict:
-        count = await self.queue.flush_queue()
-        return {"status": "ok", "data": {"flushed": count}}
-
     async def _cmd_queue_delete(self, params: dict) -> dict:
         msg_id = params.get("msg_id", "")
         if not msg_id:
             return {"status": "error", "message": "msg_id required"}
+        try:
+            _safe_msg_id(msg_id)
+        except ValueError:
+            return {"status": "error", "message": "Invalid message ID"}
         result = await self.queue.delete_message(msg_id)
         return {"status": "ok" if result else "error", "data": {"deleted": result}}
 

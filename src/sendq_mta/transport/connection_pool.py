@@ -83,8 +83,8 @@ class ConnectionPool:
             self._cleanup_task.cancel()
         await self.close_all()
 
-    def _pool_key(self, host: str, port: int) -> str:
-        return f"{host}:{port}"
+    def _pool_key(self, host: str, port: int, username: str = "") -> str:
+        return f"{host}:{port}:{username}"
 
     async def acquire(
         self,
@@ -96,7 +96,7 @@ class ConnectionPool:
         password: str = "",
     ) -> PooledConnection | None:
         """Acquire a connection from the pool, or create a new one."""
-        key = self._pool_key(host, port)
+        key = self._pool_key(host, port, username)
 
         async with self._lock:
             # Try to find an idle connection

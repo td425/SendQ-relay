@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -12,6 +13,7 @@ import yaml
 
 from sendq_mta import __version__, __app_name__
 from sendq_mta.core.config import Config
+from sendq_mta.queue.manager import _safe_msg_id
 
 
 def _load_config(ctx: click.Context) -> Config:
@@ -577,48 +579,31 @@ def _print_queue_messages(messages: list[dict]) -> None:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
 @click.pass_context
 def queue_flush(ctx: click.Context, yes: bool) -> None:
-    """Delete all messages from active and deferred queues."""
+    """Delete all messages from the active queue."""
     config = _load_config(ctx)
     queue_dir = config.get("queue.directory", "/var/spool/sendq-mta/queue")
-    deferred_dir = config.get("queue.deferred_directory", "/var/spool/sendq-mta/deferred")
 
-    # Count messages in both directories
-    def _count_and_list(d: str):
-        files = []
-        if os.path.isdir(d):
-            files = os.listdir(d)
-        count = sum(1 for f in files if f.endswith(".meta.json"))
-        return count, files
+    files = []
+    if os.path.isdir(queue_dir):
+        files = os.listdir(queue_dir)
+    count = sum(1 for f in files if f.endswith(".meta.json"))
 
-    active_count, active_files = _count_and_list(queue_dir)
-    deferred_count, deferred_files = _count_and_list(deferred_dir)
-    total = active_count + deferred_count
-
-    if total == 0:
+    if count == 0:
         click.echo("Queue is already empty.")
         return
 
-    click.echo(f"  Active:   {active_count}")
-    click.echo(f"  Deferred: {deferred_count}")
+    click.echo(f"  Active: {count}")
 
     if not yes:
-        click.confirm(f"Delete all {total} messages from the queue?", abort=True)
+        click.confirm(f"Delete all {count} messages from the queue?", abort=True)
 
-    # Delete all files from active queue
-    for f in active_files:
+    for f in files:
         try:
             os.unlink(os.path.join(queue_dir, f))
         except OSError:
             pass
 
-    # Delete all files from deferred queue
-    for f in deferred_files:
-        try:
-            os.unlink(os.path.join(deferred_dir, f))
-        except OSError:
-            pass
-
-    click.echo(f"Flushed {total} messages from the queue.")
+    click.echo(f"Flushed {count} messages from the queue.")
 
 
 @cli.command("delete-msg")
@@ -627,6 +612,12 @@ def queue_flush(ctx: click.Context, yes: bool) -> None:
 @click.pass_context
 def queue_delete_msg(ctx: click.Context, msg_id: str, yes: bool) -> None:
     """Delete a specific message from the queue."""
+    try:
+        _safe_msg_id(msg_id)
+    except ValueError:
+        click.echo(f"Invalid message ID: {msg_id}", err=True)
+        ctx.exit(1)
+
     if not yes:
         click.confirm(f"Delete message {msg_id}?", abort=True)
 
@@ -904,6 +895,15 @@ def dkim_generate(
 
     config = _load_config(ctx)
     selector = selector or config.get("dkim.selector", "sendq")
+
+    # Validate domain and selector to prevent path traversal
+    _hostname_re = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
+    if not _hostname_re.match(domain) or ".." in domain:
+        click.echo(f"Invalid domain name: {domain}", err=True)
+        ctx.exit(1)
+    if not _hostname_re.match(selector) or ".." in selector:
+        click.echo(f"Invalid selector: {selector}", err=True)
+        ctx.exit(1)
 
     os.makedirs(output_dir, exist_ok=True)
 

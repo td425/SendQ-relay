@@ -315,6 +315,12 @@ class Config:
                 errors.append(
                     f"listeners[{i}].tls_mode must be none|starttls|implicit"
                 )
+            if listener.get("require_auth") and listener.get("tls_mode") == "none":
+                errors.append(
+                    f"listeners[{i}] '{listener.get('name', 'unnamed')}': "
+                    "require_auth=true with tls_mode=none sends credentials "
+                    "in plaintext. Use tls_mode=starttls or implicit."
+                )
 
         # TLS — required if any listener uses TLS
         tls_needed = any(

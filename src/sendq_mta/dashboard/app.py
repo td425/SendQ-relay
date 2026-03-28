@@ -1,7 +1,10 @@
 """SendQ-MTA Web Dashboard — Flask application with full management API."""
 
 import copy
+import hmac
+import html as html_mod
 import json
+import logging
 import os
 import signal
 import socket
@@ -14,6 +17,9 @@ from flask import Flask, jsonify, render_template, request
 
 from sendq_mta.core.config import Config
 from sendq_mta.auth.authenticator import Authenticator
+from sendq_mta.queue.manager import _safe_msg_id
+
+logger = logging.getLogger("sendq-mta.dashboard")
 
 app = Flask(
     __name__,
@@ -23,13 +29,63 @@ app = Flask(
 # ── Globals initialised by ``init_app()`` ─────────────────────────────────
 _config: Config | None = None
 _auth: Authenticator | None = None
+_api_key: str = ""
 
 
 def init_app(config: Config) -> Flask:
-    global _config, _auth
+    global _config, _auth, _api_key
     _config = config
     _auth = Authenticator(config)
+    _api_key = config.get("management_api.http.api_key", "")
     return app
+
+
+# ── API Key Authentication ────────────────────────────────────────────────
+
+@app.before_request
+def _require_api_key():
+    """Enforce API key authentication on all endpoints except static page
+    and a stripped-down health check."""
+    # Allow the static dashboard HTML page without auth
+    if request.path == "/" and request.method == "GET":
+        return None
+    # Allow a minimal health probe without auth (no sensitive data)
+    if request.path == "/api/health" and request.method == "GET":
+        return None
+
+    if not _api_key:
+        return jsonify({
+            "status": "error",
+            "message": "Dashboard API key not configured. "
+                       "Set management_api.http.api_key in config.",
+        }), 503
+
+    # Accept key via Authorization: Bearer <key> or X-API-Key: <key>
+    provided_key = ""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        provided_key = auth_header[7:]
+    if not provided_key:
+        provided_key = request.headers.get("X-API-Key", "")
+
+    if not provided_key or not hmac.compare_digest(provided_key, _api_key):
+        return jsonify({
+            "status": "error",
+            "message": "Invalid or missing API key",
+        }), 401
+
+    return None
+
+
+@app.after_request
+def _security_headers(response):
+    """Add security headers and deny cross-origin requests."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    # No Access-Control-Allow-Origin header = browsers enforce same-origin
+    # policy by default, which is the most restrictive setting.
+    return response
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -71,6 +127,8 @@ def _list_messages(d: str) -> list[dict]:
 
 
 def _delete_message_from_dirs(msg_id: str, dirs: list[str]) -> bool:
+    # Defense-in-depth: validate msg_id to prevent path traversal
+    _safe_msg_id(msg_id)
     for d in dirs:
         meta = os.path.join(d, f"{msg_id}.meta.json")
         eml = os.path.join(d, f"{msg_id}.eml")
@@ -195,7 +253,7 @@ def api_status():
             "host": relay.get("host", ""),
             "port": relay.get("port", 587),
             "tls_mode": relay.get("tls_mode", "starttls"),
-            "username": relay.get("username", ""),
+            "has_credentials": bool(relay.get("username")),
             "failover_count": len(failover),
         },
         "features": {
@@ -276,17 +334,16 @@ def api_queue_list():
 
 @app.route("/api/queue/flush", methods=["POST"])
 def api_queue_flush():
-    q, d, _f = _all_queue_dirs()
+    q, _d, _f = _all_queue_dirs()
     count = 0
-    for directory in (q, d):
-        if os.path.isdir(directory):
-            for f in os.listdir(directory):
-                try:
-                    os.unlink(os.path.join(directory, f))
-                    if f.endswith(".meta.json"):
-                        count += 1
-                except OSError:
-                    pass
+    if os.path.isdir(q):
+        for f in os.listdir(q):
+            try:
+                os.unlink(os.path.join(q, f))
+                if f.endswith(".meta.json"):
+                    count += 1
+            except OSError:
+                pass
     return jsonify({"status": "ok", "flushed": count})
 
 
@@ -295,6 +352,10 @@ def api_queue_delete():
     msg_id = request.json.get("msg_id", "") if request.json else ""
     if not msg_id:
         return jsonify({"status": "error", "message": "msg_id required"}), 400
+    try:
+        _safe_msg_id(msg_id)
+    except ValueError:
+        return jsonify({"status": "error", "message": "Invalid message ID"}), 400
     q, d, f = _all_queue_dirs()
     deleted = _delete_message_from_dirs(msg_id, [q, d, f])
     if deleted:
@@ -650,14 +711,35 @@ def api_logs():
     else:
         lines = list(reversed(lines))
 
-    return jsonify({"status": "ok", "data": lines, "total": len(lines)})
+    # Sanitize log lines to prevent XSS via crafted email headers
+    sanitized = [html_mod.escape(line) for line in lines]
+    return jsonify({"status": "ok", "data": sanitized, "total": len(sanitized)})
 
 
 # ── API: Health Check ──────────────────────────────────────────────────────
 
 @app.route("/api/health")
 def api_health():
-    """Comprehensive self-health check."""
+    """Comprehensive self-health check.
+
+    When accessed without a valid API key (unauthenticated), returns only
+    a minimal ``{"healthy": true/false}`` response to avoid leaking
+    internal details to unauthenticated callers.
+    """
+    # Check if the caller is authenticated (health endpoint is exempt
+    # from the before_request gate, but we still inspect the key here
+    # to decide how much detail to return).
+    authenticated = False
+    if _api_key:
+        provided = ""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[7:]
+        if not provided:
+            provided = request.headers.get("X-API-Key", "")
+        if provided and hmac.compare_digest(provided, _api_key):
+            authenticated = True
+
     checks = {}
 
     # 1. Server process
@@ -784,12 +866,45 @@ def api_health():
         for c in checks.values()
     )
 
+    if not authenticated:
+        # Minimal response for unauthenticated callers (load-balancer probes)
+        return jsonify({"status": "ok", "healthy": all_ok})
+
     return jsonify({"status": "ok", "healthy": all_ok, "checks": checks})
 
 
 # ── Run ────────────────────────────────────────────────────────────────────
 
-def run_dashboard(config: Config, host: str = "0.0.0.0", port: int = 8225):
-    """Start the dashboard web server."""
+def run_dashboard(config: Config, host: str = "127.0.0.1", port: int = 8225):
+    """Start the dashboard web server.
+
+    If no API key is configured, one is auto-generated on first launch,
+    saved to the config file, and printed to the console.
+    """
+    import secrets as _secrets
+
+    api_key = config.get("management_api.http.api_key", "")
+
+    if not api_key or len(api_key) < 32:
+        api_key = _secrets.token_urlsafe(48)
+        config.set("management_api.http.api_key", api_key)
+        try:
+            config.save()
+            logger.info("Auto-generated dashboard API key and saved to config")
+        except Exception as exc:
+            logger.warning("Could not save auto-generated API key to config: %s", exc)
+
+        print()
+        print("=" * 64)
+        print("  Dashboard API key (auto-generated, saved to config):")
+        print()
+        print(f"  {api_key}")
+        print()
+        print("  Use it in requests via:")
+        print(f'    Authorization: Bearer {api_key}')
+        print(f"    or X-API-Key: {api_key}")
+        print("=" * 64)
+        print()
+
     init_app(config)
     app.run(host=host, port=port, debug=False)
