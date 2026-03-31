@@ -204,7 +204,10 @@ def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
     key = tls_cfg.get("key_file", "")
 
     if not cert or not key:
+        logger.warning("TLS cert_file or key_file not configured; TLS disabled")
         return None
+
+    logger.info("Loading TLS cert=%s key=%s", cert, key)
 
     # Auto-generate snakeoil if using the default paths and files are missing
     if (
@@ -215,7 +218,10 @@ def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
         _generate_snakeoil(cert, key)
 
     if not os.path.isfile(cert) or not os.path.isfile(key):
-        logger.warning("TLS cert/key files not found; TLS disabled")
+        logger.warning(
+            "TLS cert/key files not found (cert=%s exists=%s, key=%s exists=%s); TLS disabled",
+            cert, os.path.isfile(cert), key, os.path.isfile(key),
+        )
         return None
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -226,7 +232,13 @@ def _build_ssl_context(config: Config) -> ssl.SSLContext | None:
     else:
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
 
-    ctx.load_cert_chain(cert, key)
+    try:
+        ctx.load_cert_chain(cert, key)
+    except (ssl.SSLError, OSError) as exc:
+        logger.error("Failed to load TLS cert/key: %s — TLS disabled", exc)
+        return None
+
+    logger.info("TLS context built successfully (min_version=%s)", min_ver)
 
     ca_file = tls_cfg.get("ca_file", "")
     if ca_file and os.path.isfile(ca_file):
@@ -304,8 +316,16 @@ class MTAServer:
                         name, port,
                     )
 
-            if tls_mode == "implicit" and ssl_context:
-                kwargs["ssl_context"] = ssl_context
+            if tls_mode == "implicit":
+                if ssl_context:
+                    kwargs["ssl_context"] = ssl_context
+                    logger.info("Listener '%s' on port %d: implicit TLS enabled", name, port)
+                else:
+                    logger.error(
+                        "Listener '%s' on port %d is configured for implicit TLS "
+                        "but NO TLS certificate is available — connections will fail!",
+                        name, port,
+                    )
             elif tls_mode == "starttls" and ssl_context:
                 kwargs["tls_context"] = ssl_context
 
