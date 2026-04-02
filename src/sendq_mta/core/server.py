@@ -12,6 +12,13 @@ from typing import Any, Callable
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP as SMTPServer, AuthResult, Envelope, Session
 
+# Suppress aiosmtpd per-connection warnings that are false positives:
+# 1. "Requiring AUTH while not requiring TLS" — false positive for implicit TLS
+#    (port 465), where the socket is already TLS-wrapped before aiosmtpd sees it.
+# 2. "Session.login_data is deprecated" — internal aiosmtpd deprecation noise.
+warnings.filterwarnings("ignore", message="Requiring AUTH while not requiring TLS")
+warnings.filterwarnings("ignore", message="Session.login_data is deprecated")
+
 from sendq_mta.core.config import Config, SNAKEOIL_CERT, SNAKEOIL_KEY, _generate_snakeoil
 from sendq_mta.auth.authenticator import Authenticator
 from sendq_mta.queue.manager import QueueManager
@@ -329,14 +336,7 @@ class MTAServer:
             elif tls_mode == "starttls" and ssl_context:
                 kwargs["tls_context"] = ssl_context
 
-            # Suppress aiosmtpd's false-positive warning for implicit TLS
-            # (connection is already encrypted, auth_require_tls=False is correct)
-            if tls_mode == "implicit" and require_auth:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", message="Requiring AUTH while not requiring TLS")
-                    controller = Controller(**kwargs)
-            else:
-                controller = Controller(**kwargs)
+            controller = Controller(**kwargs)
             self.controllers.append(controller)
             logger.info(
                 "Configured listener '%s' on %s:%d (tls=%s, auth=%s)",
