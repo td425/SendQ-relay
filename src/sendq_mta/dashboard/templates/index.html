@@ -200,6 +200,7 @@ select.fc{appearance:auto}
         <button class="btn btn-d btn-sm" onclick="srvAct('stop')">Stop</button>
         <button class="btn btn-o btn-sm" onclick="srvAct('restart')">Restart</button>
         <button class="btn btn-o btn-sm" onclick="srvAct('reload')">Reload</button>
+        <button class="btn btn-o btn-sm" onclick="clearApiKey()" title="Clear stored API key and re-prompt">Sign out</button>
       </div>
     </div>
   </div>
@@ -413,8 +414,40 @@ select.fc{appearance:auto}
 </div></div>
 
 <script>
+/* ── API key handling ──────────────────────────────────────────────── */
+const API_KEY_STORAGE='sendqmta_api_key';
+function getApiKey(){
+  let k=sessionStorage.getItem(API_KEY_STORAGE);
+  if(!k){
+    k=prompt('Dashboard API key required.\n\nFind it in config/sendq-mta.yml under management_api.http.api_key');
+    if(k) sessionStorage.setItem(API_KEY_STORAGE,k);
+  }
+  return k||'';
+}
+function clearApiKey(){
+  sessionStorage.removeItem(API_KEY_STORAGE);
+  location.reload();
+}
+
 /* ── Helpers ───────────────────────────────────────────────────────── */
-async function api(u,o={}){try{const r=await fetch(u,{headers:{'Content-Type':'application/json'},...o});return await r.json()}catch(e){return{status:'error',message:e.message}}}
+async function api(u,o={}){
+  const key=getApiKey();
+  const headers=Object.assign(
+    {'Content-Type':'application/json'},
+    key?{'X-API-Key':key}:{},
+    o.headers||{}
+  );
+  try{
+    const r=await fetch(u,{...o,headers});
+    if(r.status===401){
+      sessionStorage.removeItem(API_KEY_STORAGE);
+      if(typeof toast==='function') toast('API key rejected — please re-enter','err');
+      setTimeout(()=>location.reload(),1500);
+      return{status:'error',message:'unauthorized'};
+    }
+    return await r.json();
+  }catch(e){return{status:'error',message:e.message}}
+}
 function toast(m,t='ok'){const c=document.getElementById('toast-c'),d=document.createElement('div');d.className='toast toast-'+t;d.textContent=m;c.appendChild(d);setTimeout(()=>d.remove(),3500)}
 function sid(id){return id&&id.length>26?id.slice(0,26)+'...':id}
 function sdt(iso){return iso?iso.replace('T',' ').replace('Z','').slice(0,16):'-'}
