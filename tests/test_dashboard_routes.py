@@ -138,6 +138,54 @@ def test_cache_headers_on_api(app_client):
     assert "no-store" in r.headers.get("Cache-Control", "")
 
 
+def test_login_form_round_trip_persists_session(app_client):
+    """Posting valid credentials lands the user logged-in on the next request.
+
+    Regression guard against the Secure-cookie-over-HTTP loop bug.
+    """
+    client, app_module, _ = app_client
+    import pyotp
+    code = pyotp.TOTP(app_module._portal._users["rootadmin"]["totp_secret"]).now()
+    r = client.post("/login", data={
+        "username": "rootadmin",
+        "password": "very-long-test-pw",
+        "totp": code,
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["Location"].rstrip("/") in ("", "/", "http://localhost/")
+    # Following the redirect should now show the dashboard (200), not bounce to /login.
+    r2 = client.get("/", follow_redirects=False)
+    assert r2.status_code == 200
+    # And /api/me should return the logged-in admin.
+    me = client.get("/api/me").get_json()
+    assert me["status"] == "ok"
+    assert me["data"]["username"] == "rootadmin"
+
+
+def test_wrong_credentials_do_not_create_session(app_client):
+    client, _, _ = app_client
+    r = client.post("/login", data={
+        "username": "rootadmin", "password": "wrong", "totp": "",
+    }, follow_redirects=False)
+    assert r.status_code == 401
+    # Subsequent request is still unauthenticated.
+    assert client.get("/api/me").status_code == 401
+
+
+def test_short_password_rejected_on_portal_user_add(app_client):
+    client, app_module, _ = app_client
+    import pyotp
+    code = pyotp.TOTP(app_module._portal._users["rootadmin"]["totp_secret"]).now()
+    _login(client, "rootadmin", "very-long-test-pw", totp=code)
+    tok = client.get("/api/csrf-token").get_json()["token"]
+    r = client.post(
+        "/api/portal-users",
+        json={"username": "shortpw", "password": "abc", "role": "user"},
+        headers={"X-CSRF-Token": tok},
+    )
+    assert r.status_code == 400
+
+
 def test_message_scoped_to_assigned_domains(app_client):
     client, app_module, _ = app_client
     from sendq_dashboard import db

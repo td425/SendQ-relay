@@ -322,6 +322,7 @@ DEFAULTS = {
         "log_file": "/var/log/sendq-mta/dashboard.log",
         "session_secret": "",
         "session_timeout_minutes": 30,
+        "cookie_secure": True,
         "trusted_proxies": [],
         "admin_ip_allowlist": [],
         "csrf_required": True,

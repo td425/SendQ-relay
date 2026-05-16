@@ -51,8 +51,15 @@ class PortalAuth:
         self._path = config.get("portal.users_file", "/etc/sendq-mta/portal-users.yml")
         self._users: dict[str, dict[str, Any]] = {}
         self._hasher = Authenticator(config)
+        self._min_password_length = int(config.get("auth.min_password_length", 12))
         self._ip_failures: dict[str, list[float]] = {}
         self._load()
+
+    def _check_password(self, password: str) -> None:
+        if len(password) < self._min_password_length:
+            raise ValueError(
+                f"Password must be at least {self._min_password_length} characters"
+            )
 
     # ── persistence ──────────────────────────────────────────────────────
 
@@ -114,6 +121,7 @@ class PortalAuth:
             raise ValueError(f"Portal user '{username}' already exists")
         if not username.isascii() or not username.replace("_", "").replace("-", "").replace(".", "").isalnum():
             raise ValueError("Username must be alphanumeric (plus _ - .)")
+        self._check_password(password)
         self._users[username] = {
             "password_hash": self._hasher.hash_password(password),
             "role": role,
@@ -159,6 +167,7 @@ class PortalAuth:
         u = self._users.get(username)
         if not u:
             raise ValueError(f"Portal user '{username}' not found")
+        self._check_password(password)
         u["password_hash"] = self._hasher.hash_password(password)
         u["failed_attempts"] = 0
         u["lockout_until"] = 0
@@ -167,12 +176,20 @@ class PortalAuth:
     # ── TOTP ─────────────────────────────────────────────────────────────
 
     def begin_totp_enrollment(self, username: str) -> str:
-        """Generate a TOTP secret (not yet confirmed) and return it."""
+        """Return the pending TOTP secret for ``username``, creating one if absent.
+
+        Reusing any existing pending secret matters: if the operator scans the
+        QR code, then reloads the page before confirming, regenerating the
+        secret would silently invalidate the code from their authenticator.
+        """
         import pyotp  # local import — only needed when TOTP used
 
         u = self._users.get(username)
         if not u:
             raise ValueError(f"Portal user '{username}' not found")
+        existing = u.get("_pending_totp")
+        if existing:
+            return existing
         secret = pyotp.random_base32()
         u["_pending_totp"] = secret
         self._save()

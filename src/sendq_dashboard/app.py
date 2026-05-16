@@ -141,11 +141,25 @@ def init_app(config: Config) -> Flask:
 
     idle = int(config.get("dashboard.session_timeout_minutes", 30))
     app.permanent_session_lifetime = timedelta(minutes=idle)
+    cookie_secure = bool(config.get("dashboard.cookie_secure", True))
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
-        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_SECURE=cookie_secure,
     )
+    if cookie_secure:
+        bind = config.get("dashboard.bind_address", "0.0.0.0")
+        loopback = bind in ("127.0.0.1", "::1", "localhost")
+        if not _trusted_proxies and not loopback:
+            logger.warning(
+                "dashboard.cookie_secure=true but no trusted_proxies are configured "
+                "and bind_address (%s) is not loopback. If you reach the dashboard "
+                "over plain HTTP (e.g. for testing), the browser will refuse to send "
+                "the Secure session cookie back, causing a login loop. Either put it "
+                "behind an HTTPS reverse proxy (and list it in dashboard.trusted_proxies) "
+                "or set dashboard.cookie_secure: false.",
+                bind,
+            )
     return app
 
 

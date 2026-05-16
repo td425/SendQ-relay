@@ -96,3 +96,31 @@ def test_assigned_domains_update(portal_setup):
     portal_setup.update_user("u", assigned_domains=["a.com", "b.com"])
     u = portal_setup.get("u")
     assert sorted(u.assigned_domains) == ["a.com", "b.com"]
+
+
+def test_short_password_rejected(portal_setup):
+    with pytest.raises(ValueError, match="at least"):
+        portal_setup.add_user("x", "short", role="user")
+
+
+def test_empty_password_rejected(portal_setup):
+    with pytest.raises(ValueError):
+        portal_setup.add_user("x", "", role="user")
+
+
+def test_set_password_rejects_short(portal_setup):
+    portal_setup.add_user("p", "right-pw-1234", role="user")
+    with pytest.raises(ValueError):
+        portal_setup.set_password("p", "abc")
+
+
+def test_totp_pending_secret_is_stable_across_calls(portal_setup):
+    """Reloading the enrollment page must NOT regenerate the secret.
+
+    Otherwise the user's authenticator app stops matching the moment they
+    refresh, with no visible explanation.
+    """
+    portal_setup.add_user("admin", "right-pw-1234", role="admin")
+    s1 = portal_setup.begin_totp_enrollment("admin")
+    s2 = portal_setup.begin_totp_enrollment("admin")
+    assert s1 == s2
