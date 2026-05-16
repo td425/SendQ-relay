@@ -74,6 +74,25 @@ class PortalAuth:
     def _save(self) -> None:
         atomic_write_yaml(self._path, {"users": self._users}, mode=0o600)
 
+    def _try_save(self) -> None:
+        """Persist users file, swallowing OSError.
+
+        Used on hot paths (login success / failure bookkeeping) where the
+        user's auth outcome shouldn't be discarded just because the
+        process couldn't update last_login or failed_attempts. The actual
+        problem (typically a file-permissions misconfiguration) is logged
+        so the operator can fix it.
+        """
+        try:
+            self._save()
+        except OSError:
+            logger.warning(
+                "Could not persist portal-users.yml at %s. "
+                "Check that the dashboard user can write the file.",
+                self._path,
+                exc_info=True,
+            )
+
     # ── public read API ──────────────────────────────────────────────────
 
     def list_users(self) -> list[dict[str, Any]]:
@@ -271,7 +290,10 @@ class PortalAuth:
         u["failed_attempts"] = 0
         u["lockout_until"] = 0
         u["last_login"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._save()
+        # Persistence failure here must NOT discard a valid authentication —
+        # the user is who they say they are even if we can't update their
+        # last_login field. The operator gets a warning to fix permissions.
+        self._try_save()
         self._ip_failures.pop(peer_ip, None)
         return self.get(username)  # type: ignore[return-value]
 
@@ -292,7 +314,7 @@ class PortalAuth:
                     "Portal user '%s' locked for %ds after %d failed attempts (peer=%s)",
                     username, lock, attempts, peer_ip,
                 )
-            self._save()
+            self._try_save()
         self._record_ip_failure(peer_ip)
 
     def _lock_for(self, attempts: int) -> int:

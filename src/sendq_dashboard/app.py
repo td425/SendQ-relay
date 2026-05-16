@@ -117,6 +117,19 @@ def init_app(config: Config) -> Flask:
     _portal = PortalAuth(config)
     _mta_auth = Authenticator(config)
 
+    # Sanity-check: can we actually write to the portal users file? If not,
+    # logins will succeed cryptographically but every request that records
+    # last_login or a lockout counter will log a warning. Surface this at
+    # startup so the operator can fix permissions before users hit it.
+    portal_path = config.get("portal.users_file", "/etc/sendq-mta/portal-users.yml")
+    if os.path.isfile(portal_path) and not os.access(portal_path, os.W_OK):
+        logger.warning(
+            "portal-users.yml at %s is not writable by this process. "
+            "Authentications will still work, but last_login / lockout state "
+            "won't persist. Fix with: chown <dashboard-user> %s && chmod 0600 %s",
+            portal_path, portal_path, portal_path,
+        )
+
     _trusted_proxies = _parse_cidrs(config.get("dashboard.trusted_proxies", []) or [])
     _admin_ip_allow = _parse_cidrs(config.get("dashboard.admin_ip_allowlist", []) or [])
     _legacy_api_key = config.get("management_api.http.api_key", "")
@@ -238,6 +251,45 @@ def _gate_request() -> Any:
     return None
 
 
+@app.errorhandler(Exception)
+def _handle_unexpected(exc):  # type: ignore[no-untyped-def]
+    """Catch-all so unhandled exceptions log a stack trace and surface a useful page.
+
+    Flask's default error page is opaque ("Internal Server Error" with no
+    request ID, no log pointer). This handler ensures the dashboard log
+    always contains the traceback and the user sees a hint about where to
+    look.
+    """
+    # Let HTTP exceptions (404, 403, etc.) fall through to Flask's normal handling.
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+
+    rid = secrets.token_hex(6)
+    logger.exception("Unhandled exception (request_id=%s) on %s %s",
+                     rid, request.method, request.path)
+    log_file = (_config.get("dashboard.log_file", "/var/log/sendq-mta/dashboard.log")
+                if _config else "the dashboard log")
+    body = (
+        "<!doctype html><meta charset=utf-8>"
+        "<title>SendQ Dashboard — error</title>"
+        "<body style='font-family:system-ui;max-width:640px;margin:60px auto;"
+        "padding:24px;background:#0f1116;color:#e6e9ef;border-radius:8px;"
+        "border:1px solid #232838'>"
+        "<h1 style='font-size:20px'>Something went wrong</h1>"
+        "<p>The dashboard hit an unexpected error processing your request.</p>"
+        f"<p>Request ID: <code style='background:#11141c;padding:2px 6px;"
+        f"border-radius:4px'>{rid}</code></p>"
+        f"<p>Look for this request ID in <code>{log_file}</code> for the full "
+        "stack trace. Common causes: the dashboard process can't write to "
+        "<code>portal-users.yml</code> (file permissions), or the SQLite "
+        "database directory isn't writable.</p>"
+        f"<p><a href='/login' style='color:#4f8cff'>Back to login</a></p>"
+        "</body>"
+    )
+    return body, 500
+
+
 @app.after_request
 def _security_headers(response):  # type: ignore[no-untyped-def]
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -303,12 +355,17 @@ def require_admin(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _audit(action: str, target: str = "", **detail: Any) -> None:
-    user = _current_user()
-    actor = (user or {}).get("username", "anonymous")
-    history_writer.record_audit(
-        actor, getattr(g, "client_ip", "-"), action, target,
-        json.dumps(detail) if detail else None,
-    )
+    """Best-effort audit write. Never raises — auditing failures must not
+    block the request that triggered them."""
+    try:
+        user = _current_user()
+        actor = (user or {}).get("username", "anonymous")
+        history_writer.record_audit(
+            actor, getattr(g, "client_ip", "-"), action, target,
+            json.dumps(detail) if detail else None,
+        )
+    except Exception:
+        logger.warning("audit write failed (action=%s)", action, exc_info=True)
 
 
 def _save_and_reload() -> None:

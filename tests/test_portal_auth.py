@@ -114,6 +114,29 @@ def test_set_password_rejects_short(portal_setup):
         portal_setup.set_password("p", "abc")
 
 
+def test_login_succeeds_when_users_file_is_readonly(portal_setup):
+    """A read-only users.yml must not break authentication.
+
+    Regression: this used to raise IOError out of _save() inside
+    authenticate(), bubbling up as an HTTP 500 from the dashboard login
+    endpoint.
+    """
+    portal_setup.add_user("u", "right-pw-1234", role="user")
+    # Make the underlying file read-only.
+    os.chmod(portal_setup._path, 0o400)
+    try:
+        # Authentication must still succeed and return the user.
+        user = portal_setup.authenticate("u", "right-pw-1234", "", "127.0.0.1")
+        assert user.username == "u"
+        # A failed attempt must also not crash, even though the lockout
+        # bookkeeping won't persist.
+        from sendq_dashboard.portal_auth import AuthError
+        with pytest.raises(AuthError):
+            portal_setup.authenticate("u", "wrong", "", "127.0.0.1")
+    finally:
+        os.chmod(portal_setup._path, 0o600)
+
+
 def test_totp_pending_secret_is_stable_across_calls(portal_setup):
     """Reloading the enrollment page must NOT regenerate the secret.
 
