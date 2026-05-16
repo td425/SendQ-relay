@@ -1,17 +1,101 @@
 """Configuration loader and validator for SendQ-MTA."""
 
 import os
+import shutil
 import subprocess
 import socket
 import sys
 import copy
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 logger = logging.getLogger("sendq-mta.config")
+
+
+def atomic_write_yaml(path: str, data: dict, mode: int = 0o644) -> None:
+    """Atomically write *data* as YAML to *path*.
+
+    Writes to a temp file in the same directory (so the rename is on the
+    same filesystem and therefore atomic), fsyncs, then ``os.replace()``s
+    over the target. Concurrent writers may overwrite each other's
+    contents, but no reader will ever observe a half-written file. The
+    previous good file is kept at ``<path>.bak`` so a botched write can
+    be rolled back.
+    """
+    parent = os.path.dirname(path) or "."
+    Path(parent).mkdir(parents=True, exist_ok=True)
+
+    # Snapshot the existing file to .bak BEFORE touching the live file.
+    if os.path.isfile(path):
+        try:
+            shutil.copy2(path, path + ".bak")
+        except OSError as exc:
+            logger.warning("Could not back up %s to %s.bak: %s", path, path, exc)
+
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".tmp.",
+        dir=parent,
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.dump(data, fh, default_flow_style=False, sort_keys=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        # Make sure we don't leave a stray .tmp on failure.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _safe_load_yaml(path: str) -> dict:
+    """Parse YAML from *path* with a human-readable error on failure.
+
+    If the live file is unparseable but a ``<path>.bak`` exists and IS
+    parseable, suggests the rollback command and raises ``SystemExit``
+    with a clean message instead of a buried stack trace.
+    """
+    with open(path, "r") as fh:
+        text = fh.read()
+    try:
+        return yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+        loc = f"{path}:{mark.line + 1}:{mark.column + 1}" if mark else path
+        problem = getattr(exc, "problem", str(exc))
+        snippet = ""
+        if mark:
+            lines = text.splitlines()
+            lo, hi = max(0, mark.line - 2), min(len(lines), mark.line + 3)
+            numbered = "\n".join(
+                f"  {i+1:>4}: {lines[i]}" for i in range(lo, hi)
+            )
+            snippet = f"\n\n  Context:\n{numbered}\n  {'':>6}{'^':>{mark.column + 1}}"
+        bak_hint = ""
+        if os.path.isfile(path + ".bak"):
+            try:
+                with open(path + ".bak", "r") as bf:
+                    yaml.safe_load(bf)
+                bak_hint = (
+                    f"\n  A working backup exists. To roll back run:\n"
+                    f"    sudo cp {path}.bak {path}"
+                )
+            except yaml.YAMLError:
+                pass
+        msg = (
+            f"Config file is not valid YAML: {loc}: {problem}{snippet}{bak_hint}"
+        )
+        # SystemExit prints message and exits non-zero — no stack trace.
+        raise SystemExit(msg) from None
+
 
 # Paths used for the auto-generated snakeoil certificate
 SNAKEOIL_CERT = "/etc/sendq-mta/certs/snakeoil.pem"
@@ -282,8 +366,7 @@ class Config:
             return
 
         logger.info("Loading config from %s", self._path)
-        with open(self._path, "r") as fh:
-            raw = yaml.safe_load(fh) or {}
+        raw = _safe_load_yaml(self._path)
 
         self._raw = raw
         self._data = _deep_merge(DEFAULTS, raw)
@@ -423,13 +506,16 @@ class Config:
         node[keys[-1]] = value
 
     def save(self, path: str | None = None) -> None:
-        """Save current configuration to YAML file."""
+        """Save current configuration to YAML file.
+
+        Atomic: writes to a temp file in the same directory, fsyncs, then
+        replaces the target. Keeps the previous good file at ``<path>.bak``.
+        Safe against concurrent writers and process interruption.
+        """
         target = path or self._path
         if not target:
             raise RuntimeError("No config file path set")
-        Path(target).parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "w") as fh:
-            yaml.dump(self._data, fh, default_flow_style=False, sort_keys=False)
+        atomic_write_yaml(target, self._data)
         logger.info("Config saved to %s", target)
 
     @property

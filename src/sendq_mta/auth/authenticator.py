@@ -98,13 +98,11 @@ class Authenticator:
         logger.info("Loaded %d users from %s", len(self._users), self._users_file)
 
     def _save_users(self) -> None:
-        """Persist users to the YAML file."""
-        Path(self._users_file).parent.mkdir(parents=True, exist_ok=True)
-        data = {"users": self._users}
-        with open(self._users_file, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        # Restrict permissions on users file
-        os.chmod(self._users_file, 0o600)
+        """Persist users to the YAML file (atomic write)."""
+        from sendq_mta.core.config import atomic_write_yaml
+        atomic_write_yaml(
+            self._users_file, {"users": self._users}, mode=0o600
+        )
         try:
             self._users_file_mtime = os.path.getmtime(self._users_file)
         except OSError:
