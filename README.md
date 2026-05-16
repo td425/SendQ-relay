@@ -67,8 +67,10 @@ sudo sendq-mta portal-user add admin --role admin
 sudo systemctl enable --now sendq-dashboard
 # → http://0.0.0.0:8443  (plain HTTP — terminate TLS on your reverse proxy)
 
-# 3. From your browser, log in. Admin accounts must enroll TOTP on first login;
-#    scan the QR code with any authenticator app (Aegis, 1Password, Authy, etc.).
+# 3. From your browser, log in with the admin credentials you just set.
+#    TOTP is optional by default; enable it later via
+#    `dashboard.require_totp_for_admin: true` once you've installed an
+#    authenticator app (Aegis, 1Password, Authy, etc.).
 ```
 
 ### Managing the dashboard daemon
@@ -119,6 +121,9 @@ Then in the MTA host's `sendq-mta.yml`:
 dashboard:
   bind_address: 0.0.0.0
   port: 8443
+  cookie_secure: true       # session cookies require HTTPS — flip to false ONLY
+                            # if you intentionally serve the dashboard over HTTP
+                            # (local testing without a TLS proxy in front).
   trusted_proxies:
     - 10.0.0.5/32          # the nginx box's IP — only this peer is allowed to
                             # supply X-Forwarded-* headers (anti-spoofing).
@@ -133,10 +138,36 @@ dashboard:
 
 **Critical**: configure your firewall so port 8443 on the MTA host accepts traffic **only** from the nginx box's IP. With `trusted_proxies` empty, `X-Forwarded-For` is ignored and the dashboard uses the direct peer IP everywhere.
 
+#### Testing over plain HTTP (no nginx in front yet)
+
+If you point your browser directly at `http://<mta-host>:8443` for testing, the login form will appear to do nothing — submitting credentials redirects you back to `/login`. That's because the session cookie is set with the `Secure` attribute, so the browser refuses to send it back over plain HTTP. Two ways to resolve:
+
+```yaml
+# Option A (recommended): put a TLS proxy in front and list its IP in
+# trusted_proxies — production behavior.
+
+# Option B: for local-only HTTP testing, disable the Secure flag.
+dashboard:
+  cookie_secure: false
+```
+
+The dashboard prints a startup warning if it detects this misconfiguration (Secure cookies enabled, no trusted proxies, non-loopback bind).
+
 ### Roles
 
-- **Admin** — full CRUD over MTA users, portal users, domains, configuration, DKIM, relay, queue. TOTP is mandatory; the first login forces enrollment.
+- **Admin** — full CRUD over MTA users, portal users, domains, configuration, DKIM, relay, queue.
 - **User** — read-only. Sees only messages and log lines for the domains assigned to them by an admin. Cannot reach admin API routes (HTTP 403).
+
+### Two-factor authentication (TOTP)
+
+TOTP is **optional by default**. Admins log in with just a password unless you flip:
+
+```yaml
+dashboard:
+  require_totp_for_admin: true
+```
+
+When this is on, an admin without an enrolled TOTP secret is redirected to `/login/totp-enroll` on their next login and can't reach the dashboard until they complete enrollment with an authenticator app. Users with TOTP already enrolled (admin or not) must always supply the code regardless of the flag.
 
 ### Portal user CLI
 

@@ -51,8 +51,18 @@ class PortalAuth:
         self._path = config.get("portal.users_file", "/etc/sendq-mta/portal-users.yml")
         self._users: dict[str, dict[str, Any]] = {}
         self._hasher = Authenticator(config)
+        self._min_password_length = int(config.get("auth.min_password_length", 12))
+        self._require_totp_for_admin = bool(
+            config.get("dashboard.require_totp_for_admin", False)
+        )
         self._ip_failures: dict[str, list[float]] = {}
         self._load()
+
+    def _check_password(self, password: str) -> None:
+        if len(password) < self._min_password_length:
+            raise ValueError(
+                f"Password must be at least {self._min_password_length} characters"
+            )
 
     # ── persistence ──────────────────────────────────────────────────────
 
@@ -66,6 +76,25 @@ class PortalAuth:
 
     def _save(self) -> None:
         atomic_write_yaml(self._path, {"users": self._users}, mode=0o600)
+
+    def _try_save(self) -> None:
+        """Persist users file, swallowing OSError.
+
+        Used on hot paths (login success / failure bookkeeping) where the
+        user's auth outcome shouldn't be discarded just because the
+        process couldn't update last_login or failed_attempts. The actual
+        problem (typically a file-permissions misconfiguration) is logged
+        so the operator can fix it.
+        """
+        try:
+            self._save()
+        except OSError:
+            logger.warning(
+                "Could not persist portal-users.yml at %s. "
+                "Check that the dashboard user can write the file.",
+                self._path,
+                exc_info=True,
+            )
 
     # ── public read API ──────────────────────────────────────────────────
 
@@ -114,6 +143,7 @@ class PortalAuth:
             raise ValueError(f"Portal user '{username}' already exists")
         if not username.isascii() or not username.replace("_", "").replace("-", "").replace(".", "").isalnum():
             raise ValueError("Username must be alphanumeric (plus _ - .)")
+        self._check_password(password)
         self._users[username] = {
             "password_hash": self._hasher.hash_password(password),
             "role": role,
@@ -159,6 +189,7 @@ class PortalAuth:
         u = self._users.get(username)
         if not u:
             raise ValueError(f"Portal user '{username}' not found")
+        self._check_password(password)
         u["password_hash"] = self._hasher.hash_password(password)
         u["failed_attempts"] = 0
         u["lockout_until"] = 0
@@ -167,12 +198,20 @@ class PortalAuth:
     # ── TOTP ─────────────────────────────────────────────────────────────
 
     def begin_totp_enrollment(self, username: str) -> str:
-        """Generate a TOTP secret (not yet confirmed) and return it."""
+        """Return the pending TOTP secret for ``username``, creating one if absent.
+
+        Reusing any existing pending secret matters: if the operator scans the
+        QR code, then reloads the page before confirming, regenerating the
+        secret would silently invalidate the code from their authenticator.
+        """
         import pyotp  # local import — only needed when TOTP used
 
         u = self._users.get(username)
         if not u:
             raise ValueError(f"Portal user '{username}' not found")
+        existing = u.get("_pending_totp")
+        if existing:
+            return existing
         secret = pyotp.random_base32()
         u["_pending_totp"] = secret
         self._save()
@@ -231,9 +270,20 @@ class PortalAuth:
             self._record_failure(username, peer_ip)
             raise AuthError("Invalid credentials")
 
-        # Password OK — check TOTP.
-        if u.get("role") == "admin" and not u.get("totp_secret"):
-            # Admin without TOTP must enroll on first login.
+        # Password OK — TOTP handling:
+        #  - If the user has enrolled TOTP, verify the code.
+        #  - If the user is an admin without TOTP AND the operator has
+        #    require_totp_for_admin enabled, return a stub user so the
+        #    caller can drive them through the enrollment flow.
+        #  - Otherwise (TOTP optional and not enrolled), let them in.
+        if u.get("totp_secret"):
+            import pyotp
+            if not totp_code or not pyotp.TOTP(u["totp_secret"]).verify(
+                totp_code, valid_window=1
+            ):
+                self._record_failure(username, peer_ip)
+                raise AuthError("Invalid TOTP code")
+        elif u.get("role") == "admin" and self._require_totp_for_admin:
             return PortalUser(
                 username=username,
                 role="admin",
@@ -242,19 +292,14 @@ class PortalAuth:
                 assigned_domains=[],
             )
 
-        if u.get("totp_secret"):
-            import pyotp
-            if not totp_code or not pyotp.TOTP(u["totp_secret"]).verify(
-                totp_code, valid_window=1
-            ):
-                self._record_failure(username, peer_ip)
-                raise AuthError("Invalid TOTP code")
-
         # Success — clear failure counters.
         u["failed_attempts"] = 0
         u["lockout_until"] = 0
         u["last_login"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._save()
+        # Persistence failure here must NOT discard a valid authentication —
+        # the user is who they say they are even if we can't update their
+        # last_login field. The operator gets a warning to fix permissions.
+        self._try_save()
         self._ip_failures.pop(peer_ip, None)
         return self.get(username)  # type: ignore[return-value]
 
@@ -275,7 +320,7 @@ class PortalAuth:
                     "Portal user '%s' locked for %ds after %d failed attempts (peer=%s)",
                     username, lock, attempts, peer_ip,
                 )
-            self._save()
+            self._try_save()
         self._record_ip_failure(peer_ip)
 
     def _lock_for(self, attempts: int) -> int:
