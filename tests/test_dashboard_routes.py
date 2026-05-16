@@ -237,6 +237,19 @@ def test_totp_enroll_renders_with_no_qr_when_all_backends_fail(app_client, monke
     assert b'alt="TOTP QR"' not in r2.data
 
 
+def test_api_status_includes_status_ok_wrapper(app_client):
+    """The SPA's Dashboard tile checks ``r.status === 'ok'`` before rendering.
+
+    Regression: the route once returned the data dict directly without the
+    wrapper, so the Dashboard tile showed "Status unavailable" forever.
+    """
+    client, _, _ = app_client
+    _login(client, "regular", "very-long-test-pw")
+    payload = client.get("/api/status").get_json()
+    assert payload["status"] == "ok"
+    assert "queue" in payload and "server" in payload
+
+
 def test_short_password_rejected_on_portal_user_add(app_client):
     client, app_module, _ = app_client
     import pyotp

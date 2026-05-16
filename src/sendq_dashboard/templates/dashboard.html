@@ -6,6 +6,7 @@
 <meta name="csrf-token" content="{{ csrf }}">
 <title>SendQ Dashboard</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='theme-bootstrap.js') }}"></script>
 </head>
 <body>
 <aside class="sidebar">
@@ -13,6 +14,7 @@
   <nav id="nav"></nav>
   <div class="userbox">
     <div class="who"><span id="me-name">…</span><span class="role" id="me-role"></span></div>
+    <button type="button" class="link" id="theme-toggle" title="Switch theme">Switch theme</button>
     <form action="/logout" method="post" id="logout-form">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <button type="submit" class="link">Log out</button>

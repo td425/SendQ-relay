@@ -10,6 +10,21 @@
 const CSRF = document.querySelector('meta[name=csrf-token]').content;
 let ME = null;
 
+/* ── Theme toggle ──────────────────────────────────────────────
+   The initial data-theme attribute is set by theme-bootstrap.js in
+   <head> so the page paints in the right palette without a flash.
+   Here we only wire the toggle button. */
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  btn.onclick = () => {
+    const next = (document.documentElement.getAttribute('data-theme') === 'light')
+      ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('sendq_theme', next); } catch {}
+  };
+});
+
 /* ── HTTP helper ───────────────────────────────────────────── */
 async function api(url, opts = {}) {
   const headers = Object.assign(
@@ -228,7 +243,13 @@ async function viewMessages(root) {
     const r = await api('/api/messages?' + params);
     const tb = document.getElementById('msg-body');
     if (r.status !== 'ok') { tb.innerHTML = '<tr><td colspan="7" class="empty">' + esc(r.message) + '</td></tr>'; return; }
-    if (!r.data.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No messages match.</td></tr>'; }
+    if (!r.data.length) {
+      const anyFilter = [...new URLSearchParams(params)].some(([k,v]) =>
+        v && !['page','page_size'].includes(k));
+      tb.innerHTML = anyFilter
+        ? '<tr><td colspan="7" class="empty">No messages match those filters.</td></tr>'
+        : '<tr><td colspan="7" class="empty">No messages yet. As mail flows through the MTA, every send / delivery / defer / bounce will appear here with a per-message timeline. Existing in-flight queue files are visible in the Queue tab.</td></tr>';
+    }
     else {
       tb.innerHTML = r.data.map(m => `
         <tr class="msg-row" data-id="${esc(m.msg_id)}">
