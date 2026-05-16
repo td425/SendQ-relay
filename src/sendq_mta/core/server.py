@@ -415,7 +415,8 @@ class MTAServer:
             logger.info("SIGHUP received — reloading configuration")
             self.config.reload()
             self.authenticator._load_users()
-            logger.info("Reloaded users after SIGHUP")
+            self.queue_manager.reload_dkim_signer()
+            logger.info("Reloaded users and DKIM signer after SIGHUP")
 
         loop.add_signal_handler(signal.SIGHUP, _reload_handler)
 
