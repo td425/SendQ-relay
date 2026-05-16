@@ -976,6 +976,18 @@ def dkim_generate(
         click.echo(f"\n  dkim.enabled = true")
         click.echo(f"  dkim.key_file = {key_path}")
         click.echo(f"  dkim.signing_domains = {signing_domains}")
+
+        # Notify a running daemon so it picks up the new key without a restart.
+        # Without this the in-memory DKIMSigner stays disabled and mail goes
+        # out unsigned until the user manually reloads.
+        pid_file = config.get("server.pid_file", "/var/run/sendq-mta/sendq-mta.pid")
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, signal.SIGHUP)
+            click.echo(f"  Sent SIGHUP to running server (pid {pid}) to reload DKIM.")
+        except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
+            pass  # No running server, or no permission — user can restart manually.
     except Exception as exc:
         click.echo(f"\nDKIM key pair generated for {domain}:")
         click.echo(f"  Private key: {key_path}")

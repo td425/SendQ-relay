@@ -193,7 +193,6 @@ class QueueManager:
         from sendq_mta.transport.delivery import DeliveryEngine
 
         engine = DeliveryEngine(self.config)
-        dkim_signer = self._dkim_signer
 
         logger.info("Delivery worker %d started", worker_id)
         while self._running:
@@ -206,6 +205,11 @@ class QueueManager:
 
             self._stats["active"] += 1
             msg.status = "delivering"
+
+            # Read the signer per-message so SIGHUP-driven reloads take effect
+            # for already-running workers (e.g. user enables DKIM on a live
+            # server via dashboard toggle or generate-dkim).
+            dkim_signer = self._dkim_signer
 
             # DKIM-sign outbound messages before delivery. Any error here must
             # NOT block delivery — fall back to sending the unsigned message.
@@ -273,6 +277,21 @@ class QueueManager:
         if msg_ids:
             logger.info("Loaded %d messages from queue on startup", len(msg_ids))
 
+    def reload_dkim_signer(self) -> None:
+        """Rebuild the DKIM signer from current config.
+
+        Safe to call at runtime (e.g. from a SIGHUP handler). Never raises;
+        on failure the signer is set to None and delivery continues without
+        signing. Workers read ``self._dkim_signer`` per message, so the new
+        instance takes effect immediately for all live workers.
+        """
+        try:
+            from sendq_mta.auth.dkim import DKIMSigner
+            self._dkim_signer = DKIMSigner(self.config)
+        except Exception:
+            logger.exception("Failed to (re)initialize DKIM signer")
+            self._dkim_signer = None
+
     async def start_workers(self) -> None:
         """Start delivery workers and deferred scanner."""
         self._running = True
@@ -280,12 +299,7 @@ class QueueManager:
 
         # Construct the DKIM signer once, eagerly, so any key-loading errors are
         # visible at startup (rather than silently killing per-worker tasks).
-        try:
-            from sendq_mta.auth.dkim import DKIMSigner
-            self._dkim_signer = DKIMSigner(self.config)
-        except Exception:
-            logger.exception("Failed to initialize DKIM signer; continuing without signing")
-            self._dkim_signer = None
+        self.reload_dkim_signer()
 
         # Load existing queued messages
         await self._load_existing_queue()
