@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SendQ Dashboard — Login</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+</head>
+<body>
+<main class="login-wrap">
+  <section class="login-card">
+    <h1>SendQ Dashboard</h1>
+
+    {% if totp_enroll %}
+      <p class="login-sub">
+        Admin accounts require two-factor authentication. Scan the QR code
+        in an authenticator app, then enter the 6-digit code to finish enrollment.
+      </p>
+      <div class="qr-wrap">
+        <img src="{{ totp_qr }}" alt="TOTP QR" width="220" height="220">
+      </div>
+      <p class="secret-text">Manual secret: <code>{{ totp_secret }}</code></p>
+      <form method="post" action="/login/totp-enroll" class="login-form">
+        <label>6-digit code
+          <input type="text" name="totp" inputmode="numeric" pattern="[0-9]{6}"
+                 autocomplete="one-time-code" required autofocus>
+        </label>
+        <button type="submit">Confirm enrollment</button>
+      </form>
+    {% else %}
+      <form method="post" action="/login" class="login-form">
+        <label>Username
+          <input type="text" name="username" autocomplete="username" required autofocus>
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <label>TOTP code <span class="hint">(if enrolled)</span>
+          <input type="text" name="totp" inputmode="numeric" pattern="[0-9]{6}"
+                 autocomplete="one-time-code">
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+    {% endif %}
+
+    {% if error %}
+      <p class="login-err">{{ error }}</p>
+    {% endif %}
+  </section>
+</main>
+</body>
+</html>

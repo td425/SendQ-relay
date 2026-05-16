@@ -886,105 +886,41 @@ def dkim_generate(
     ctx: click.Context, domain: str, selector: str | None, bits: int, output_dir: str
 ) -> None:
     """Generate DKIM key pair for a domain."""
-    try:
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives import serialization
-    except ImportError:
-        click.echo("Error: 'cryptography' package required. Install with: pip install cryptography", err=True)
-        ctx.exit(1)
+    from sendq_mta.auth.dkim import generate_domain_key
 
     config = _load_config(ctx)
     selector = selector or config.get("dkim.selector", "sendq")
+    service_user = config.get("server.run_as_user", "sendq")
 
-    # Validate domain and selector to prevent path traversal
-    _hostname_re = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
-    if not _hostname_re.match(domain) or ".." in domain:
-        click.echo(f"Invalid domain name: {domain}", err=True)
+    try:
+        result = generate_domain_key(
+            domain, selector, bits, output_dir, chown_to=service_user
+        )
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
         ctx.exit(1)
-    if not _hostname_re.match(selector) or ".." in selector:
-        click.echo(f"Invalid selector: {selector}", err=True)
+        return
+    except RuntimeError as exc:
+        click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)
+        return
 
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Generate RSA key pair
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    public_key = private_key.public_key()
-    public_der = public_key.public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-
-    import base64
-
-    pub_b64 = base64.b64encode(public_der).decode()
-
-    # Save private key
-    key_path = os.path.join(output_dir, f"{domain}.{selector}.private.pem")
-    with open(key_path, "wb") as f:
-        f.write(private_pem)
-    os.chmod(key_path, 0o640)
-
-    # Save DNS record
-    dns_path = os.path.join(output_dir, f"{domain}.{selector}.dns.txt")
-    dns_record = f'{selector}._domainkey.{domain} IN TXT "v=DKIM1; k=rsa; p={pub_b64}"'
-    with open(dns_path, "w") as f:
-        f.write(dns_record + "\n")
-
-    # When run as root, hand the key off to the service user/group so the
-    # daemon (which drops privileges) can actually read it. Without this the
-    # delivery workers fail to load the key and outbound mail stops.
-    if os.geteuid() == 0:
-        service_user = config.get("server.user", "sendq")
-        try:
-            import grp
-            import pwd
-            uid = pwd.getpwnam(service_user).pw_uid
-            gid = grp.getgrnam(service_user).gr_gid
-            os.chown(key_path, uid, gid)
-            os.chown(dns_path, uid, gid)
-        except (KeyError, PermissionError) as exc:
-            click.echo(
-                f"  WARNING: could not chown {key_path} to {service_user}: {exc}. "
-                f"Service may be unable to read the key.",
-                err=True,
-            )
-
-    # Auto-update config: enable DKIM, set key_dir for auto-discovery, add
-    # the domain to signing_domains. We intentionally do NOT overwrite the
-    # legacy dkim.key_file here — that field only supports one domain, and
-    # clobbering it on every generate-dkim call breaks any previously
-    # configured domain. Per-domain keys are now discovered from key_dir
-    # using the <domain>.<selector>.private.pem naming convention.
     config.set("dkim.enabled", True)
     config.set("dkim.key_dir", output_dir)
-
+    config.set("dkim.selector", selector)
     domain_lc = domain.lower()
     signing_domains = [d.lower() for d in config.get("dkim.signing_domains", [])]
     if domain_lc not in signing_domains:
         signing_domains.append(domain_lc)
     config.set("dkim.signing_domains", signing_domains)
 
-    config.set("dkim.selector", selector)
-
     try:
         config.save()
         click.echo(f"\nDKIM key pair generated for {domain}:")
-        click.echo(f"  Private key:  {key_path}")
-        click.echo(f"  DNS record:   {dns_path}")
+        click.echo(f"  Private key:  {result['key_path']}")
+        click.echo(f"  DNS record:   {result['dns_path']}")
         click.echo(f"  Config updated: {config.path}")
-        click.echo(f"\n  dkim.enabled = true")
-        click.echo(f"  dkim.key_dir = {output_dir}")
         click.echo(f"  dkim.signing_domains = {signing_domains}")
-
-        # Notify a running daemon so it picks up the new key without a restart.
-        # Without this the in-memory DKIMSigner stays disabled and mail goes
-        # out unsigned until the user manually reloads.
         pid_file = config.get("server.pid_file", "/var/run/sendq-mta/sendq-mta.pid")
         try:
             with open(pid_file) as f:
@@ -992,21 +928,117 @@ def dkim_generate(
             os.kill(pid, signal.SIGHUP)
             click.echo(f"  Sent SIGHUP to running server (pid {pid}) to reload DKIM.")
         except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
-            pass  # No running server, or no permission — user can restart manually.
+            pass
     except Exception as exc:
-        click.echo(f"\nDKIM key pair generated for {domain}:")
-        click.echo(f"  Private key: {key_path}")
-        click.echo(f"  DNS record:  {dns_path}")
-        click.echo(f"\n  WARNING: Could not auto-update config: {exc}", err=True)
+        click.echo(f"\nKey written to {result['key_path']} but config save failed: {exc}", err=True)
+        click.echo("Set dkim.enabled=true and add the domain to dkim.signing_domains manually.")
+
+    click.echo("\nAdd this DNS TXT record:")
+    click.echo(f"  {result['dns_record']}")
+    click.echo()
+
+
+# ============================================================================
+# Portal user management (dashboard login accounts)
+# ============================================================================
+
+
+@cli.group("portal-user")
+def portal_user_group() -> None:
+    """Manage portal (dashboard) login users — separate from SMTP users."""
+
+
+def _portal_auth(ctx: click.Context):
+    config = _load_config(ctx)
+    try:
+        from sendq_dashboard.portal_auth import PortalAuth
+    except ImportError:
         click.echo(
-            f"  Manually set dkim.enabled=true, dkim.key_dir={output_dir}, "
-            f"and add {domain!r} to dkim.signing_domains.",
+            "Dashboard package not installed. Install with:\n"
+            "  pip install 'sendq-mta[dashboard]'",
             err=True,
         )
+        ctx.exit(1)
+        raise SystemExit(1)
+    return PortalAuth(config)
 
-    click.echo(f"\nAdd this DNS TXT record:")
-    click.echo(f"  {dns_record}")
-    click.echo()
+
+@portal_user_group.command("add")
+@click.argument("username")
+@click.option("--role", type=click.Choice(["admin", "user"]), default="user")
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.option("--domain", "-d", multiple=True,
+              help="Assigned domain (repeatable). Only meaningful for role=user.")
+@click.pass_context
+def portal_user_add(ctx: click.Context, username: str, role: str, password: str,
+                    domain: tuple[str, ...]) -> None:
+    """Create a portal user."""
+    pa = _portal_auth(ctx)
+    try:
+        pa.add_user(username, password, role=role, assigned_domains=list(domain))
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+    click.echo(f"Portal user '{username}' added (role={role}).")
+    if role == "admin":
+        click.echo("Admin users must enroll TOTP on first login.")
+
+
+@portal_user_group.command("list")
+@click.pass_context
+def portal_user_list(ctx: click.Context) -> None:
+    """List all portal users."""
+    pa = _portal_auth(ctx)
+    users = pa.list_users()
+    if not users:
+        click.echo("No portal users.")
+        return
+    rows = [[u["username"], u["role"], "yes" if u["enabled"] else "no",
+             "yes" if u["totp_enrolled"] else "no",
+             ",".join(u["assigned_domains"]) or "-"] for u in users]
+    _print_table(["USERNAME", "ROLE", "ENABLED", "TOTP", "DOMAINS"], rows)
+
+
+@portal_user_group.command("delete")
+@click.argument("username")
+@click.pass_context
+def portal_user_delete(ctx: click.Context, username: str) -> None:
+    """Delete a portal user."""
+    pa = _portal_auth(ctx)
+    try:
+        pa.delete_user(username)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+    click.echo(f"Deleted portal user '{username}'.")
+
+
+@portal_user_group.command("set-password")
+@click.argument("username")
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.pass_context
+def portal_user_set_password(ctx: click.Context, username: str, password: str) -> None:
+    """Reset a portal user's password."""
+    pa = _portal_auth(ctx)
+    try:
+        pa.set_password(username, password)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+    click.echo(f"Password updated for '{username}'.")
+
+
+@portal_user_group.command("disable-totp")
+@click.argument("username")
+@click.pass_context
+def portal_user_disable_totp(ctx: click.Context, username: str) -> None:
+    """Clear a portal user's TOTP enrollment (e.g. lost-phone recovery)."""
+    pa = _portal_auth(ctx)
+    pa.disable_totp(username)
+    click.echo(f"TOTP disabled for '{username}'. They will be prompted to re-enroll on next login if they are an admin.")
 
 
 # ============================================================================
@@ -1137,24 +1169,29 @@ def _daemonize(config: Config) -> None:
 
 
 @cli.command("dashboard")
-@click.option("--host", "-H", default="0.0.0.0", help="Bind address.")
-@click.option("--port", "-p", default=8225, type=int, help="Port number.")
+@click.option("--host", "-H", default=None, help="Bind address (default from config).")
+@click.option("--port", "-p", default=None, type=int, help="Port (default from config: 8443).")
 @click.pass_context
-def run_dashboard(ctx: click.Context, host: str, port: int) -> None:
-    """Launch the web management dashboard."""
+def run_dashboard(ctx: click.Context, host: str | None, port: int | None) -> None:
+    """Launch the web management dashboard.
+
+    Plain HTTP — terminate TLS on a reverse proxy (e.g. nginx) in front of it.
+    """
     config = _load_config(ctx)
     try:
-        from sendq_mta.dashboard.app import run_dashboard as _run
+        from sendq_dashboard.app import run_dashboard as _run
     except ImportError:
         click.echo(
-            "Dashboard requires Flask. Install it with:\n"
+            "Dashboard package not installed. Install with:\n"
             "  pip install 'sendq-mta[dashboard]'",
             err=True,
         )
         ctx.exit(1)
         return
-    click.echo(f"Starting dashboard on http://{host}:{port}")
-    _run(config, host=host, port=port)
+    bind = host or config.get("dashboard.bind_address", "0.0.0.0")
+    p = port or int(config.get("dashboard.port", 8443))
+    click.echo(f"Starting dashboard on http://{bind}:{p} (TLS terminates upstream)")
+    _run(config, host=bind, port=p)
 
 
 # ============================================================================

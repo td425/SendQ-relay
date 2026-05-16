@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{ csrf }}">
+<title>SendQ Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">SendQ</div>
+  <nav id="nav"></nav>
+  <div class="userbox">
+    <div class="who"><span id="me-name">…</span><span class="role" id="me-role"></span></div>
+    <form action="/logout" method="post" id="logout-form">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <button type="submit" class="link">Log out</button>
+    </form>
+  </div>
+  <div class="version">v{{ version }}</div>
+</aside>
+
+<main class="main">
+  <header class="top">
+    <h1 id="top-title">Dashboard</h1>
+    <div id="server-state" class="srv"></div>
+  </header>
+  <section id="content" class="content"></section>
+</main>
+
+<div id="toast-c" class="toast-container"></div>
+
+<template id="tpl-empty"><p class="empty">Nothing here yet.</p></template>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,12 +1,93 @@
 """DKIM signing and verification for SendQ-MTA."""
 
+import base64
 import logging
 import os
+import re
 from typing import Any
 
 from sendq_mta.core.config import Config
 
 logger = logging.getLogger("sendq-mta.dkim")
+
+_HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
+
+
+def generate_domain_key(
+    domain: str,
+    selector: str,
+    bits: int = 2048,
+    output_dir: str = "/etc/sendq-mta/dkim",
+    chown_to: str | None = "sendq",
+) -> dict[str, str]:
+    """Generate an RSA DKIM key pair for ``domain`` and write key + DNS record.
+
+    Returns a dict with the file paths and the DNS TXT record. Used by both
+    the ``generate-dkim`` CLI command and the dashboard's
+    ``POST /api/dkim/keys`` endpoint, so the generation logic stays in one
+    place.
+
+    Raises:
+        ValueError: on invalid domain/selector input.
+        RuntimeError: if the ``cryptography`` package isn't installed.
+    """
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+    except ImportError as exc:
+        raise RuntimeError(
+            "'cryptography' package required to generate DKIM keys. "
+            "Install with: pip install cryptography"
+        ) from exc
+
+    if not _HOSTNAME_RE.match(domain) or ".." in domain:
+        raise ValueError(f"Invalid domain name: {domain!r}")
+    if not _HOSTNAME_RE.match(selector) or ".." in selector:
+        raise ValueError(f"Invalid selector: {selector!r}")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_der = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    pub_b64 = base64.b64encode(public_der).decode()
+
+    key_path = os.path.join(output_dir, f"{domain}.{selector}.private.pem")
+    dns_path = os.path.join(output_dir, f"{domain}.{selector}.dns.txt")
+    dns_record = f'{selector}._domainkey.{domain} IN TXT "v=DKIM1; k=rsa; p={pub_b64}"'
+
+    with open(key_path, "wb") as f:
+        f.write(private_pem)
+    os.chmod(key_path, 0o640)
+    with open(dns_path, "w") as f:
+        f.write(dns_record + "\n")
+
+    if chown_to and os.geteuid() == 0:
+        try:
+            import grp
+            import pwd
+            uid = pwd.getpwnam(chown_to).pw_uid
+            gid = grp.getgrnam(chown_to).gr_gid
+            os.chown(key_path, uid, gid)
+            os.chown(dns_path, uid, gid)
+        except (KeyError, PermissionError) as exc:
+            logger.warning(
+                "Could not chown %s to %s: %s — service may be unable to read.",
+                key_path, chown_to, exc,
+            )
+
+    return {
+        "key_path": key_path,
+        "dns_path": dns_path,
+        "dns_record": dns_record,
+    }
 
 try:
     import dkim as _dkim
