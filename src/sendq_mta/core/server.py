@@ -192,7 +192,10 @@ class SendQAuthenticator:
                 if self._auth.authenticate(username, password):
                     session.authenticated = True
                     session.authenticated_user = username
-                    self._auth.record_login(username)
+                    try:
+                        self._auth.record_login(username)
+                    except Exception:
+                        logger.warning("Failed to record login for user=%s (non-fatal)", username)
                     logger.info("AUTH success for user=%s", username)
                     return AuthResult(success=True, auth_data=auth_data)
                 else:

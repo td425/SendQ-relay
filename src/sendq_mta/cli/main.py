@@ -928,7 +928,7 @@ def dkim_generate(
     key_path = os.path.join(output_dir, f"{domain}.{selector}.private.pem")
     with open(key_path, "wb") as f:
         f.write(private_pem)
-    os.chmod(key_path, 0o600)
+    os.chmod(key_path, 0o640)
 
     # Save DNS record
     dns_path = os.path.join(output_dir, f"{domain}.{selector}.dns.txt")
@@ -936,14 +936,34 @@ def dkim_generate(
     with open(dns_path, "w") as f:
         f.write(dns_record + "\n")
 
+    # When run as root, hand the key off to the service user/group so the
+    # daemon (which drops privileges) can actually read it. Without this the
+    # delivery workers fail to load the key and outbound mail stops.
+    if os.geteuid() == 0:
+        service_user = config.get("server.user", "sendq")
+        try:
+            import grp
+            import pwd
+            uid = pwd.getpwnam(service_user).pw_uid
+            gid = grp.getgrnam(service_user).gr_gid
+            os.chown(key_path, uid, gid)
+            os.chown(dns_path, uid, gid)
+        except (KeyError, PermissionError) as exc:
+            click.echo(
+                f"  WARNING: could not chown {key_path} to {service_user}: {exc}. "
+                f"Service may be unable to read the key.",
+                err=True,
+            )
+
     # Auto-update config: enable DKIM, set key_file, add domain to signing_domains
     config.set("dkim.enabled", True)
     config.set("dkim.key_file", key_path)
 
-    signing_domains = config.get("dkim.signing_domains", [])
-    if domain not in signing_domains:
-        signing_domains.append(domain)
-        config.set("dkim.signing_domains", signing_domains)
+    domain_lc = domain.lower()
+    signing_domains = [d.lower() for d in config.get("dkim.signing_domains", [])]
+    if domain_lc not in signing_domains:
+        signing_domains.append(domain_lc)
+    config.set("dkim.signing_domains", signing_domains)
 
     config.set("dkim.selector", selector)
 
