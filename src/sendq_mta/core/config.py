@@ -377,6 +377,13 @@ class Config:
                 errors.append("dkim.key_file required when DKIM is enabled")
             if not dkim.get("signing_domains"):
                 errors.append("dkim.signing_domains required when DKIM is enabled")
+            try:
+                import dkim as _dkim  # noqa: F401
+            except ImportError:
+                errors.append(
+                    "dkim.enabled is true but 'dkimpy' is not installed. "
+                    "Install with: pip install dkimpy"
+                )
 
         return errors
 
