@@ -25,7 +25,10 @@ class DKIMSigner:
         self._enabled = config.get("dkim.enabled", False)
         self._selector = config.get("dkim.selector", "sendq").encode()
         self._key_file = config.get("dkim.key_file", "")
-        self._signing_domains = config.get("dkim.signing_domains", [])
+        # Normalize signing domains to lowercase for case-insensitive matching
+        self._signing_domains = {
+            d.lower() for d in config.get("dkim.signing_domains", []) if d
+        }
         self._headers_to_sign = [
             h.encode() for h in config.get("dkim.headers_to_sign", [])
         ]
@@ -34,22 +37,45 @@ class DKIMSigner:
 
         if self._enabled:
             if not DKIM_AVAILABLE:
-                logger.error("DKIM enabled but 'dkim' package not installed")
+                logger.error(
+                    "DKIM enabled but 'dkimpy' package not installed — "
+                    "install with: pip install 'sendq-mta[dkim]'. "
+                    "Signing will be skipped; mail will still send unsigned."
+                )
                 self._enabled = False
-            elif self._key_file and os.path.isfile(self._key_file):
-                with open(self._key_file, "rb") as f:
-                    self._private_key = f.read()
-                logger.info("DKIM signing enabled (selector=%s)", self._selector.decode())
+            elif not self._key_file:
+                logger.error("DKIM enabled but dkim.key_file is not set — signing disabled")
+                self._enabled = False
+            elif not os.path.isfile(self._key_file):
+                logger.error(
+                    "DKIM key file not found: %s — signing disabled", self._key_file
+                )
+                self._enabled = False
             else:
-                logger.error("DKIM key file not found: %s", self._key_file)
-                self._enabled = False
+                try:
+                    with open(self._key_file, "rb") as f:
+                        self._private_key = f.read()
+                except OSError as exc:
+                    # Most commonly a PermissionError when the key was generated
+                    # as root (0600) but the service runs as an unprivileged user.
+                    logger.error(
+                        "Cannot read DKIM key %s: %s — signing disabled. "
+                        "Ensure the service user can read the key file.",
+                        self._key_file, exc,
+                    )
+                    self._enabled = False
+                else:
+                    logger.info(
+                        "DKIM signing enabled (selector=%s, domains=%s)",
+                        self._selector.decode(), sorted(self._signing_domains),
+                    )
 
     def sign(self, message_data: bytes, sender_domain: str) -> bytes:
         """Sign a message with DKIM. Returns signed message data."""
         if not self._enabled:
             return message_data
 
-        if sender_domain not in self._signing_domains:
+        if sender_domain.lower() not in self._signing_domains:
             return message_data
 
         try:

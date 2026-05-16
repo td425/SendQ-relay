@@ -95,6 +95,7 @@ class QueueManager:
         self._delivery_queue: asyncio.Queue[QueueMessage] = asyncio.Queue()
         self._running = False
         self._known_ids: set[str] = set()
+        self._dkim_signer: Any = None
         self._stats = {
             "enqueued": 0,
             "delivered": 0,
@@ -190,10 +191,9 @@ class QueueManager:
         """Worker coroutine that pulls messages from the queue and delivers."""
         # Import here to avoid circular imports
         from sendq_mta.transport.delivery import DeliveryEngine
-        from sendq_mta.auth.dkim import DKIMSigner
 
         engine = DeliveryEngine(self.config)
-        dkim_signer = DKIMSigner(self.config)
+        dkim_signer = self._dkim_signer
 
         logger.info("Delivery worker %d started", worker_id)
         while self._running:
@@ -207,14 +207,23 @@ class QueueManager:
             self._stats["active"] += 1
             msg.status = "delivering"
 
-            # DKIM-sign outbound messages before delivery
-            if dkim_signer.enabled and msg.sender:
-                sender_domain = msg.sender.rsplit("@", 1)[-1].lower() if "@" in msg.sender else ""
+            # DKIM-sign outbound messages before delivery. Any error here must
+            # NOT block delivery — fall back to sending the unsigned message.
+            if dkim_signer is not None and dkim_signer.enabled and msg.sender:
+                sender_domain = (
+                    msg.sender.rsplit("@", 1)[-1].lower() if "@" in msg.sender else ""
+                )
                 if sender_domain:
-                    msg.data = dkim_signer.sign(
-                        msg.data if isinstance(msg.data, bytes) else msg.data.encode("utf-8"),
-                        sender_domain,
-                    )
+                    try:
+                        msg.data = dkim_signer.sign(
+                            msg.data if isinstance(msg.data, bytes)
+                            else msg.data.encode("utf-8"),
+                            sender_domain,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "DKIM signing raised for %s; sending unsigned", msg.msg_id
+                        )
 
             try:
                 success = await engine.deliver(msg)
@@ -268,6 +277,15 @@ class QueueManager:
         """Start delivery workers and deferred scanner."""
         self._running = True
         num_workers = self.config.get("queue.workers", 16)
+
+        # Construct the DKIM signer once, eagerly, so any key-loading errors are
+        # visible at startup (rather than silently killing per-worker tasks).
+        try:
+            from sendq_mta.auth.dkim import DKIMSigner
+            self._dkim_signer = DKIMSigner(self.config)
+        except Exception:
+            logger.exception("Failed to initialize DKIM signer; continuing without signing")
+            self._dkim_signer = None
 
         # Load existing queued messages
         await self._load_existing_queue()
