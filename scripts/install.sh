@@ -190,8 +190,11 @@ fi
 # ============================================================================
 # Install systemd service
 # ============================================================================
-log "Installing systemd service..."
+log "Installing systemd services..."
 cp "$SCRIPT_DIR/systemd/sendq-mta.service" /etc/systemd/system/sendq-mta.service
+if [ -f "$SCRIPT_DIR/systemd/sendq-dashboard.service" ]; then
+    cp "$SCRIPT_DIR/systemd/sendq-dashboard.service" /etc/systemd/system/sendq-dashboard.service
+fi
 systemctl daemon-reload
 
 # ============================================================================
@@ -231,8 +234,13 @@ echo "  6. Validate and start:"
 echo "     sendq-mta validate-config"
 echo "     sudo systemctl enable --now sendq-mta"
 echo ""
-echo "  7. Check status:"
+echo "  7. (Optional) Enable the web dashboard on boot:"
+echo "     sudo sendq-mta portal-user add admin --role admin"
+echo "     sudo systemctl enable --now sendq-dashboard"
+echo "     # then visit http://<host>:8443 (terminate TLS on your reverse proxy)"
+echo ""
+echo "  8. Check status:"
 echo "     sendq-mta status"
-echo "     sudo systemctl status sendq-mta"
+echo "     sudo systemctl status sendq-mta sendq-dashboard"
 echo ""
 echo "=============================================="

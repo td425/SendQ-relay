@@ -315,6 +315,23 @@ DEFAULTS = {
             "api_key": "",
         },
     },
+    "dashboard": {
+        "bind_address": "0.0.0.0",
+        "port": 8443,
+        "pid_file": "/var/run/sendq-mta/dashboard.pid",
+        "log_file": "/var/log/sendq-mta/dashboard.log",
+        "session_secret": "",
+        "session_timeout_minutes": 30,
+        "trusted_proxies": [],
+        "admin_ip_allowlist": [],
+        "csrf_required": True,
+        "sqlite_path": "/var/lib/sendq-mta/dashboard.db",
+        "history_retention_days": 30,
+        "audit_retention_days": 365,
+    },
+    "portal": {
+        "users_file": "/etc/sendq-mta/portal-users.yml",
+    },
 }
 
 
