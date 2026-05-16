@@ -464,8 +464,16 @@ def login_post():
         _audit("login_failed", username, ip=g.client_ip, reason=str(exc))
         return _login_error(str(exc))
 
-    # Admin without TOTP must enroll before getting a real session.
-    if user.role == "admin" and not user.totp_enrolled:
+    # If TOTP is required for admins and this one hasn't enrolled, push them
+    # into the enrollment flow. When require_totp_for_admin is false (the
+    # default), authenticate() returns a fully-authenticated user above and
+    # we skip this branch entirely.
+    if (
+        user.role == "admin"
+        and not user.totp_enrolled
+        and _config
+        and _config.get("dashboard.require_totp_for_admin", False)
+    ):
         session.clear()
         session["totp_enroll_user"] = user.username
         return redirect(url_for("totp_enroll"))

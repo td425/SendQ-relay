@@ -67,8 +67,10 @@ sudo sendq-mta portal-user add admin --role admin
 sudo systemctl enable --now sendq-dashboard
 # → http://0.0.0.0:8443  (plain HTTP — terminate TLS on your reverse proxy)
 
-# 3. From your browser, log in. Admin accounts must enroll TOTP on first login;
-#    scan the QR code with any authenticator app (Aegis, 1Password, Authy, etc.).
+# 3. From your browser, log in with the admin credentials you just set.
+#    TOTP is optional by default; enable it later via
+#    `dashboard.require_totp_for_admin: true` once you've installed an
+#    authenticator app (Aegis, 1Password, Authy, etc.).
 ```
 
 ### Managing the dashboard daemon
@@ -153,8 +155,19 @@ The dashboard prints a startup warning if it detects this misconfiguration (Secu
 
 ### Roles
 
-- **Admin** — full CRUD over MTA users, portal users, domains, configuration, DKIM, relay, queue. TOTP is mandatory; the first login forces enrollment.
+- **Admin** — full CRUD over MTA users, portal users, domains, configuration, DKIM, relay, queue.
 - **User** — read-only. Sees only messages and log lines for the domains assigned to them by an admin. Cannot reach admin API routes (HTTP 403).
+
+### Two-factor authentication (TOTP)
+
+TOTP is **optional by default**. Admins log in with just a password unless you flip:
+
+```yaml
+dashboard:
+  require_totp_for_admin: true
+```
+
+When this is on, an admin without an enrolled TOTP secret is redirected to `/login/totp-enroll` on their next login and can't reach the dashboard until they complete enrollment with an authenticator app. Users with TOTP already enrolled (admin or not) must always supply the code regardless of the flag.
 
 ### Portal user CLI
 

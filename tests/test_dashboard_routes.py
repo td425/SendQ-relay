@@ -180,6 +180,10 @@ def test_totp_enroll_renders_without_pillow(app_client, monkeypatch):
     """
     client, app_module, _ = app_client
 
+    # Flip the config so admin login forces enrollment for this test.
+    app_module._portal._require_totp_for_admin = True
+    app_module._config.set("dashboard.require_totp_for_admin", True)
+
     # Create a fresh admin with NO TOTP enrolled, so login redirects to enroll.
     app_module._portal.add_user("freshadmin", "very-long-test-pw", role="admin")
 
@@ -211,6 +215,8 @@ def test_totp_enroll_renders_without_pillow(app_client, monkeypatch):
 def test_totp_enroll_renders_with_no_qr_when_all_backends_fail(app_client, monkeypatch):
     """If both PNG and SVG rendering die, the page must still render."""
     client, app_module, _ = app_client
+    app_module._portal._require_totp_for_admin = True
+    app_module._config.set("dashboard.require_totp_for_admin", True)
     app_module._portal.add_user("freshadmin2", "very-long-test-pw", role="admin")
 
     import qrcode

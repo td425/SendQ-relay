@@ -52,6 +52,9 @@ class PortalAuth:
         self._users: dict[str, dict[str, Any]] = {}
         self._hasher = Authenticator(config)
         self._min_password_length = int(config.get("auth.min_password_length", 12))
+        self._require_totp_for_admin = bool(
+            config.get("dashboard.require_totp_for_admin", False)
+        )
         self._ip_failures: dict[str, list[float]] = {}
         self._load()
 
@@ -267,17 +270,12 @@ class PortalAuth:
             self._record_failure(username, peer_ip)
             raise AuthError("Invalid credentials")
 
-        # Password OK — check TOTP.
-        if u.get("role") == "admin" and not u.get("totp_secret"):
-            # Admin without TOTP must enroll on first login.
-            return PortalUser(
-                username=username,
-                role="admin",
-                enabled=True,
-                totp_enrolled=False,
-                assigned_domains=[],
-            )
-
+        # Password OK — TOTP handling:
+        #  - If the user has enrolled TOTP, verify the code.
+        #  - If the user is an admin without TOTP AND the operator has
+        #    require_totp_for_admin enabled, return a stub user so the
+        #    caller can drive them through the enrollment flow.
+        #  - Otherwise (TOTP optional and not enrolled), let them in.
         if u.get("totp_secret"):
             import pyotp
             if not totp_code or not pyotp.TOTP(u["totp_secret"]).verify(
@@ -285,6 +283,14 @@ class PortalAuth:
             ):
                 self._record_failure(username, peer_ip)
                 raise AuthError("Invalid TOTP code")
+        elif u.get("role") == "admin" and self._require_totp_for_admin:
+            return PortalUser(
+                username=username,
+                role="admin",
+                enabled=True,
+                totp_enrolled=False,
+                assigned_domains=[],
+            )
 
         # Success — clear failure counters.
         u["failed_attempts"] = 0

@@ -65,12 +65,44 @@ def test_wrong_password_raises(portal_setup):
         portal_setup.authenticate("bob", "wrong", "", "127.0.0.1")
 
 
-def test_admin_without_totp_returns_enrollment_user(portal_setup):
-    """Admin login is allowed once with a valid password to trigger TOTP enrollment."""
+def test_admin_without_totp_logs_in_by_default(portal_setup):
+    """TOTP is optional by default — admin logs in normally with just a password."""
     portal_setup.add_user("root", "right-pw-1234", role="admin")
     user = portal_setup.authenticate("root", "right-pw-1234", "", "127.0.0.1")
     assert user.role == "admin"
     assert user.totp_enrolled is False
+    # last_login should have been recorded — i.e. it's a real login, not a stub.
+    assert portal_setup._users["root"]["last_login"]
+
+
+def test_admin_without_totp_blocked_when_required(portal_setup):
+    """Flipping require_totp_for_admin gates the admin until they enroll."""
+    portal_setup._require_totp_for_admin = True
+    portal_setup.add_user("root2", "right-pw-1234", role="admin")
+    user = portal_setup.authenticate("root2", "right-pw-1234", "", "127.0.0.1")
+    # Stub user signalling the caller should drive enrollment.
+    assert user.totp_enrolled is False
+    # No last_login recorded — it isn't a real authenticated session yet.
+    assert not portal_setup._users["root2"]["last_login"]
+
+
+def test_enrolled_user_must_provide_totp_code(portal_setup):
+    """If TOTP is enrolled, the code is always required (regardless of config)."""
+    from sendq_dashboard.portal_auth import AuthError
+    import pyotp
+
+    portal_setup.add_user("e", "right-pw-1234", role="user")
+    secret = portal_setup.begin_totp_enrollment("e")
+    portal_setup.confirm_totp_enrollment("e", pyotp.TOTP(secret).now())
+
+    # Right password, missing code → reject.
+    with pytest.raises(AuthError, match="TOTP"):
+        portal_setup.authenticate("e", "right-pw-1234", "", "127.0.0.1")
+    # Right password + right code → success.
+    user = portal_setup.authenticate(
+        "e", "right-pw-1234", pyotp.TOTP(secret).now(), "127.0.0.1"
+    )
+    assert user.totp_enrolled is True
 
 
 def test_user_role_logs_in_without_totp(portal_setup):
