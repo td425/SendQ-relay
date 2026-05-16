@@ -292,6 +292,19 @@ class QueueManager:
             logger.exception("Failed to (re)initialize DKIM signer")
             self._dkim_signer = None
 
+        # Loud alarm if config asks for DKIM but signing is inactive
+        # (missing dkimpy, unreadable key, or key file not found). Without
+        # this the failure mode is silent — mail goes out unsigned and the
+        # operator only finds out from a delivery report.
+        if self.config.get("dkim.enabled", False) and (
+            self._dkim_signer is None or not self._dkim_signer.enabled
+        ):
+            logger.warning(
+                "dkim.enabled=true but DKIM signing is INACTIVE "
+                "(missing dkimpy, unreadable key, or key file not found). "
+                "Outbound mail will be sent UNSIGNED."
+            )
+
     async def start_workers(self) -> None:
         """Start delivery workers and deferred scanner."""
         self._running = True
