@@ -531,19 +531,57 @@ def totp_enroll_post():
     return redirect(url_for("index"))
 
 
-def _build_totp_qr(username: str, secret: str) -> str:
+def _build_totp_qr(username: str, secret: str) -> str | None:
+    """Render a TOTP enrollment QR as a data: URI, or None if we can't.
+
+    Tries Pillow-backed PNG first for best UX, falls back to qrcode's
+    pure-Python SVG backend (which has no third-party deps), then gives
+    up. Callers must handle ``None`` by rendering the manual secret only.
+    The user can always type the secret into their authenticator app
+    instead of scanning, so a missing QR is degraded UX, not a blocker.
+    """
     import base64
     import io
 
-    import pyotp
-    import qrcode
+    try:
+        import pyotp
+    except ImportError:
+        logger.error("pyotp not installed — TOTP enrollment unavailable")
+        return None
 
     issuer = _config.get("server.hostname", "SendQ-MTA") if _config else "SendQ-MTA"
     uri = pyotp.totp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
-    img = qrcode.make(uri)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    try:
+        import qrcode
+    except ImportError:
+        logger.error("qrcode not installed — TOTP page will show manual secret only")
+        return None
+
+    # PIL/Pillow-backed PNG.
+    try:
+        img = qrcode.make(uri)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        logger.warning(
+            "PNG QR render failed (Pillow probably missing). "
+            "Falling back to SVG. Install Pillow for crisper rendering: "
+            "pip install Pillow",
+            exc_info=True,
+        )
+
+    # Pure-Python SVG fallback — no external deps required.
+    try:
+        from qrcode.image.svg import SvgImage
+        img = qrcode.make(uri, image_factory=SvgImage)
+        buf = io.BytesIO()
+        img.save(buf)
+        return "data:image/svg+xml;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        logger.warning("SVG QR render also failed", exc_info=True)
+    return None
 
 
 # ── /api/me + csrf ───────────────────────────────────────────────────

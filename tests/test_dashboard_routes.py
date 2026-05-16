@@ -172,6 +172,65 @@ def test_wrong_credentials_do_not_create_session(app_client):
     assert client.get("/api/me").status_code == 401
 
 
+def test_totp_enroll_renders_without_pillow(app_client, monkeypatch):
+    """Regression: TOTP enrollment 500'd when Pillow wasn't installed.
+
+    Simulate Pillow's absence by forcing the PNG path to fail; the page
+    must still render via the SVG fallback (or text-only fallback).
+    """
+    client, app_module, _ = app_client
+
+    # Create a fresh admin with NO TOTP enrolled, so login redirects to enroll.
+    app_module._portal.add_user("freshadmin", "very-long-test-pw", role="admin")
+
+    # Force qrcode.make() to fail like a missing-Pillow install would, so
+    # the route exercises the fallback path.
+    import qrcode
+    real_make = qrcode.make
+
+    def fake_make(uri, **kw):
+        if "image_factory" in kw:
+            return real_make(uri, **kw)  # let SVG path succeed
+        raise ImportError("simulated: PIL not installed")
+
+    monkeypatch.setattr(qrcode, "make", fake_make)
+
+    r = client.post("/login", data={
+        "username": "freshadmin", "password": "very-long-test-pw", "totp": "",
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert "/login/totp-enroll" in r.headers["Location"]
+
+    r2 = client.get("/login/totp-enroll")
+    assert r2.status_code == 200
+    # Page must still show the manual secret so the operator can complete
+    # enrollment manually.
+    assert b"Manual secret" in r2.data
+
+
+def test_totp_enroll_renders_with_no_qr_when_all_backends_fail(app_client, monkeypatch):
+    """If both PNG and SVG rendering die, the page must still render."""
+    client, app_module, _ = app_client
+    app_module._portal.add_user("freshadmin2", "very-long-test-pw", role="admin")
+
+    import qrcode
+    monkeypatch.setattr(
+        qrcode, "make",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("forced")),
+    )
+
+    r = client.post("/login", data={
+        "username": "freshadmin2", "password": "very-long-test-pw", "totp": "",
+    }, follow_redirects=False)
+    assert r.status_code == 302
+
+    r2 = client.get("/login/totp-enroll")
+    assert r2.status_code == 200
+    assert b"Manual secret" in r2.data
+    # No <img> tag for the QR (the template hides it when totp_qr is empty).
+    assert b'alt="TOTP QR"' not in r2.data
+
+
 def test_short_password_rejected_on_portal_user_add(app_client):
     client, app_module, _ = app_client
     import pyotp

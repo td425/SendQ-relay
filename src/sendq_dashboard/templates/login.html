@@ -13,12 +13,21 @@
 
     {% if totp_enroll %}
       <p class="login-sub">
-        Admin accounts require two-factor authentication. Scan the QR code
-        in an authenticator app, then enter the 6-digit code to finish enrollment.
+        Admin accounts require two-factor authentication.
+        {% if totp_qr %}
+          Scan the QR code in an authenticator app, then enter the
+          6-digit code to finish enrollment.
+        {% else %}
+          Enter the manual secret below into your authenticator app
+          (TOTP, 6 digits, 30-second period), then enter the 6-digit
+          code to finish enrollment.
+        {% endif %}
       </p>
-      <div class="qr-wrap">
-        <img src="{{ totp_qr }}" alt="TOTP QR" width="220" height="220">
-      </div>
+      {% if totp_qr %}
+        <div class="qr-wrap">
+          <img src="{{ totp_qr }}" alt="TOTP QR" width="220" height="220">
+        </div>
+      {% endif %}
       <p class="secret-text">Manual secret: <code>{{ totp_secret }}</code></p>
       <form method="post" action="/login/totp-enroll" class="login-form">
         <label>6-digit code
