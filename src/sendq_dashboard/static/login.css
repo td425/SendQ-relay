@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="dark"] {
   --bg: #0f1116;
   --panel: #181c25;
   --text: #e6e9ef;
@@ -6,6 +7,23 @@
   --accent: #4f8cff;
   --err: #ff6b6b;
   --border: #232838;
+  --input-bg: #11141c;
+  --code-bg: #11141c;
+  --shadow: 0 10px 40px rgba(0,0,0,0.4);
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f5f6fa;
+  --panel: #ffffff;
+  --text: #1a1d24;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --err: #dc2626;
+  --border: #d8dde8;
+  --input-bg: #ffffff;
+  --code-bg: #eef0f5;
+  --shadow: 0 8px 30px rgba(15,23,42,0.1);
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 body {
@@ -29,7 +47,7 @@ body {
   padding: 32px;
   width: 100%;
   max-width: 380px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  box-shadow: var(--shadow);
 }
 .login-card h1 {
   margin: 0 0 24px;
@@ -48,7 +66,7 @@ body {
 }
 .hint { color: var(--muted); font-size: 11px; }
 .login-form input {
-  background: #11141c;
+  background: var(--input-bg);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 10px 12px;
@@ -87,7 +105,7 @@ body {
   word-break: break-all;
 }
 .secret-text code {
-  background: #11141c;
+  background: var(--input-bg);
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 11px;

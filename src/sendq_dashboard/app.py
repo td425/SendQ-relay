@@ -627,6 +627,7 @@ def api_status():
         return sum(1 for x in os.listdir(p) if x.endswith(".meta.json"))
 
     return jsonify({
+        "status": "ok",
         "server": {
             "running": pid is not None,
             "pid": pid,
