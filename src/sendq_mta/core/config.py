@@ -184,7 +184,9 @@ DEFAULTS = {
     "dkim": {
         "enabled": False,
         "selector": "sendq",
+        "key_dir": "/etc/sendq-mta/dkim",
         "key_file": "",
+        "keys": {},
         "signing_domains": [],
         "headers_to_sign": [
             "From", "To", "Subject", "Date", "Message-ID",
@@ -373,10 +375,13 @@ class Config:
         # DKIM
         dkim = self._data.get("dkim", {})
         if dkim.get("enabled"):
-            if not dkim.get("key_file"):
-                errors.append("dkim.key_file required when DKIM is enabled")
             if not dkim.get("signing_domains"):
                 errors.append("dkim.signing_domains required when DKIM is enabled")
+            if not (dkim.get("key_dir") or dkim.get("key_file") or dkim.get("keys")):
+                errors.append(
+                    "dkim requires one of: dkim.key_dir (per-domain auto-discovery), "
+                    "dkim.keys (explicit map), or dkim.key_file (single-domain legacy)"
+                )
             try:
                 import dkim as _dkim  # noqa: F401
             except ImportError:

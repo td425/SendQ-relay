@@ -955,9 +955,14 @@ def dkim_generate(
                 err=True,
             )
 
-    # Auto-update config: enable DKIM, set key_file, add domain to signing_domains
+    # Auto-update config: enable DKIM, set key_dir for auto-discovery, add
+    # the domain to signing_domains. We intentionally do NOT overwrite the
+    # legacy dkim.key_file here — that field only supports one domain, and
+    # clobbering it on every generate-dkim call breaks any previously
+    # configured domain. Per-domain keys are now discovered from key_dir
+    # using the <domain>.<selector>.private.pem naming convention.
     config.set("dkim.enabled", True)
-    config.set("dkim.key_file", key_path)
+    config.set("dkim.key_dir", output_dir)
 
     domain_lc = domain.lower()
     signing_domains = [d.lower() for d in config.get("dkim.signing_domains", [])]
@@ -974,7 +979,7 @@ def dkim_generate(
         click.echo(f"  DNS record:   {dns_path}")
         click.echo(f"  Config updated: {config.path}")
         click.echo(f"\n  dkim.enabled = true")
-        click.echo(f"  dkim.key_file = {key_path}")
+        click.echo(f"  dkim.key_dir = {output_dir}")
         click.echo(f"  dkim.signing_domains = {signing_domains}")
 
         # Notify a running daemon so it picks up the new key without a restart.
@@ -993,7 +998,11 @@ def dkim_generate(
         click.echo(f"  Private key: {key_path}")
         click.echo(f"  DNS record:  {dns_path}")
         click.echo(f"\n  WARNING: Could not auto-update config: {exc}", err=True)
-        click.echo(f"  Manually set dkim.enabled=true, dkim.key_file={key_path}", err=True)
+        click.echo(
+            f"  Manually set dkim.enabled=true, dkim.key_dir={output_dir}, "
+            f"and add {domain!r} to dkim.signing_domains.",
+            err=True,
+        )
 
     click.echo(f"\nAdd this DNS TXT record:")
     click.echo(f"  {dns_record}")

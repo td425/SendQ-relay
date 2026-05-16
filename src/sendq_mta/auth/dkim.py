@@ -2,7 +2,6 @@
 
 import logging
 import os
-from email import message_from_bytes
 from typing import Any
 
 from sendq_mta.core.config import Config
@@ -18,14 +17,20 @@ except ImportError:
 
 
 class DKIMSigner:
-    """Signs outbound messages with DKIM."""
+    """Signs outbound messages with DKIM, one key per signing domain.
+
+    Per-domain keys are discovered automatically from ``dkim.key_dir`` using
+    the naming convention ``<domain>.<selector>.private.pem`` (the same
+    layout produced by the ``generate-dkim`` CLI). Explicit overrides may
+    be supplied via ``dkim.keys`` as a ``{domain: path}`` map. The legacy
+    ``dkim.key_file`` setting is honored as a fallback when only one
+    signing domain is configured.
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self._enabled = config.get("dkim.enabled", False)
         self._selector = config.get("dkim.selector", "sendq").encode()
-        self._key_file = config.get("dkim.key_file", "")
-        # Normalize signing domains to lowercase for case-insensitive matching
         self._signing_domains = {
             d.lower() for d in config.get("dkim.signing_domains", []) if d
         }
@@ -33,57 +38,110 @@ class DKIMSigner:
             h.encode() for h in config.get("dkim.headers_to_sign", [])
         ]
         self._algorithm = config.get("dkim.algorithm", "rsa-sha256")
-        self._private_key: bytes = b""
+        self._keys: dict[str, bytes] = {}
 
-        if self._enabled:
-            if not DKIM_AVAILABLE:
+        if not self._enabled:
+            return
+
+        if not DKIM_AVAILABLE:
+            logger.error(
+                "DKIM enabled but 'dkimpy' package not installed — "
+                "install with: pip install dkimpy. "
+                "Signing will be skipped; mail will still send unsigned."
+            )
+            self._enabled = False
+            return
+
+        if not self._signing_domains:
+            logger.error("DKIM enabled but dkim.signing_domains is empty — signing disabled")
+            self._enabled = False
+            return
+
+        key_dir = config.get("dkim.key_dir", "/etc/sendq-mta/dkim")
+        explicit_keys = {
+            d.lower(): path
+            for d, path in (config.get("dkim.keys", {}) or {}).items()
+        }
+        legacy_key_file = config.get("dkim.key_file", "")
+        selector_str = self._selector.decode()
+
+        for domain in self._signing_domains:
+            key_path = self._resolve_key_path(
+                domain, selector_str, key_dir, explicit_keys, legacy_key_file
+            )
+            if key_path is None:
                 logger.error(
-                    "DKIM enabled but 'dkimpy' package not installed — "
-                    "install with: pip install 'sendq-mta[dkim]'. "
-                    "Signing will be skipped; mail will still send unsigned."
+                    "No DKIM key for %s — expected %s/%s.%s.private.pem "
+                    "(or set dkim.keys.%s). Mail from this domain will be UNSIGNED.",
+                    domain, key_dir, domain, selector_str, domain,
                 )
-                self._enabled = False
-            elif not self._key_file:
-                logger.error("DKIM enabled but dkim.key_file is not set — signing disabled")
-                self._enabled = False
-            elif not os.path.isfile(self._key_file):
+                continue
+            try:
+                with open(key_path, "rb") as f:
+                    self._keys[domain] = f.read()
+            except OSError as exc:
                 logger.error(
-                    "DKIM key file not found: %s — signing disabled", self._key_file
+                    "Cannot read DKIM key %s for %s: %s — domain will be UNSIGNED. "
+                    "Ensure the service user can read the file.",
+                    key_path, domain, exc,
                 )
-                self._enabled = False
-            else:
-                try:
-                    with open(self._key_file, "rb") as f:
-                        self._private_key = f.read()
-                except OSError as exc:
-                    # Most commonly a PermissionError when the key was generated
-                    # as root (0600) but the service runs as an unprivileged user.
-                    logger.error(
-                        "Cannot read DKIM key %s: %s — signing disabled. "
-                        "Ensure the service user can read the key file.",
-                        self._key_file, exc,
-                    )
-                    self._enabled = False
-                else:
-                    logger.info(
-                        "DKIM signing enabled (selector=%s, domains=%s)",
-                        self._selector.decode(), sorted(self._signing_domains),
-                    )
+
+        if self._keys:
+            logger.info(
+                "DKIM signing enabled (selector=%s, signed_domains=%s)",
+                selector_str, sorted(self._keys.keys()),
+            )
+        else:
+            logger.error(
+                "DKIM enabled but no usable keys loaded — signing disabled. "
+                "Run `sendq-mta generate-dkim -d <domain>` for each domain "
+                "in signing_domains."
+            )
+            self._enabled = False
+
+    def _resolve_key_path(
+        self,
+        domain: str,
+        selector: str,
+        key_dir: str,
+        explicit_keys: dict[str, str],
+        legacy_key_file: str,
+    ) -> str | None:
+        # 1. Explicit dkim.keys override
+        path = explicit_keys.get(domain)
+        if path and os.path.isfile(path):
+            return path
+        # 2. Convention: <key_dir>/<domain>.<selector>.private.pem
+        candidate = os.path.join(key_dir, f"{domain}.{selector}.private.pem")
+        if os.path.isfile(candidate):
+            return candidate
+        # 3. Legacy single-key back-compat: only when there's exactly one
+        #    signing domain and the operator hasn't migrated to key_dir yet.
+        if (
+            len(self._signing_domains) == 1
+            and legacy_key_file
+            and os.path.isfile(legacy_key_file)
+        ):
+            return legacy_key_file
+        return None
 
     def sign(self, message_data: bytes, sender_domain: str) -> bytes:
-        """Sign a message with DKIM. Returns signed message data."""
+        """Sign a message with DKIM. Returns signed message data unchanged
+        if the signer is disabled or no key is loaded for ``sender_domain``."""
         if not self._enabled:
             return message_data
 
-        if sender_domain.lower() not in self._signing_domains:
+        domain = sender_domain.lower()
+        privkey = self._keys.get(domain)
+        if privkey is None:
             return message_data
 
         try:
             signature = _dkim.sign(
                 message=message_data,
                 selector=self._selector,
-                domain=sender_domain.encode(),
-                privkey=self._private_key,
+                domain=domain.encode(),
+                privkey=privkey,
                 include_headers=self._headers_to_sign or None,
             )
             return signature + message_data
@@ -94,6 +152,10 @@ class DKIMSigner:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def signed_domains(self) -> set[str]:
+        return set(self._keys.keys())
 
 
 class DKIMVerifier:
