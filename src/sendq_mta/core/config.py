@@ -318,6 +318,8 @@ DEFAULTS = {
     "dashboard": {
         "bind_address": "0.0.0.0",
         "port": 8443,
+        "pid_file": "/var/run/sendq-mta/dashboard.pid",
+        "log_file": "/var/log/sendq-mta/dashboard.log",
         "session_secret": "",
         "session_timeout_minutes": 30,
         "trusted_proxies": [],

@@ -63,13 +63,35 @@ This pulls in Flask, pyotp (TOTP), and qrcode. The MTA itself runs fine without 
 #    auto-created — the dashboard refuses logins until at least one exists.
 sudo sendq-mta portal-user add admin --role admin
 
-# 2. Launch the dashboard (plain HTTP on 8443 by default; bind/port configurable).
-sudo sendq-mta dashboard
-# → http://0.0.0.0:8443
+# 2. Enable the dashboard service so it boots automatically (recommended).
+sudo systemctl enable --now sendq-dashboard
+# → http://0.0.0.0:8443  (plain HTTP — terminate TLS on your reverse proxy)
 
 # 3. From your browser, log in. Admin accounts must enroll TOTP on first login;
 #    scan the QR code with any authenticator app (Aegis, 1Password, Authy, etc.).
 ```
+
+### Managing the dashboard daemon
+
+The dashboard is a long-running service, controllable either through systemd or directly via the CLI:
+
+```bash
+# systemd (preferred for production)
+sudo systemctl start   sendq-dashboard
+sudo systemctl stop    sendq-dashboard
+sudo systemctl restart sendq-dashboard
+sudo systemctl status  sendq-dashboard
+
+# Equivalent CLI commands (work even on hosts without systemd)
+sudo sendq-mta dashboard start          # daemonize into background
+sudo sendq-mta dashboard stop           # SIGTERM the running daemon
+sudo sendq-mta dashboard restart
+sudo sendq-mta dashboard status
+sudo sendq-mta dashboard start -f       # foreground (no daemonize)
+sudo sendq-mta dashboard run            # foreground (the systemd entry point)
+```
+
+The PID file lives at `/var/run/sendq-mta/dashboard.pid` (configurable via `dashboard.pid_file`). Logs go to `/var/log/sendq-mta/dashboard.log`.
 
 ### Deployment model — terminate TLS upstream
 

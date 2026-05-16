@@ -1168,16 +1168,33 @@ def _daemonize(config: Config) -> None:
 # ============================================================================
 
 
-@cli.command("dashboard")
-@click.option("--host", "-H", default=None, help="Bind address (default from config).")
-@click.option("--port", "-p", default=None, type=int, help="Port (default from config: 8443).")
+@cli.group("dashboard", invoke_without_command=True)
 @click.pass_context
-def run_dashboard(ctx: click.Context, host: str | None, port: int | None) -> None:
-    """Launch the web management dashboard.
+def dashboard_group(ctx: click.Context) -> None:
+    """Manage the web management dashboard daemon.
 
-    Plain HTTP — terminate TLS on a reverse proxy (e.g. nginx) in front of it.
+    Runs as a long-lived background service. Use `start`/`stop`/`restart`/
+    `status`, or `run` to keep it in the foreground (for systemd /
+    development).
     """
-    config = _load_config(ctx)
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+def _get_dashboard_pid(config: Config) -> int | None:
+    pid_file = config.get("dashboard.pid_file", "/var/run/sendq-mta/dashboard.pid")
+    if not os.path.isfile(pid_file):
+        return None
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        return None
+
+
+def _load_dashboard_runner(ctx: click.Context):
     try:
         from sendq_dashboard.app import run_dashboard as _run
     except ImportError:
@@ -1187,11 +1204,243 @@ def run_dashboard(ctx: click.Context, host: str | None, port: int | None) -> Non
             err=True,
         )
         ctx.exit(1)
+        raise SystemExit(1)
+    return _run
+
+
+def _run_dashboard_blocking(
+    config: Config,
+    host: str | None,
+    port: int | None,
+    pid_file: str | None = None,
+) -> None:
+    """Run the dashboard in this process. Writes pid_file if given."""
+    runner = _load_dashboard_runner.__wrapped__ if hasattr(_load_dashboard_runner, "__wrapped__") else None
+    # Direct import to avoid the wrapper's ctx.exit needing a Click context.
+    from sendq_dashboard.app import run_dashboard as _run
+
+    bind = host or config.get("dashboard.bind_address", "0.0.0.0")
+    p = port or int(config.get("dashboard.port", 8443))
+
+    if pid_file:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+
+    def _cleanup(*_args):
+        try:
+            if pid_file and os.path.isfile(pid_file):
+                os.unlink(pid_file)
+        except OSError:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    try:
+        _run(config, host=bind, port=p)
+    finally:
+        if pid_file:
+            try:
+                if os.path.isfile(pid_file):
+                    os.unlink(pid_file)
+            except OSError:
+                pass
+
+
+def _daemonize_dashboard(
+    config: Config, host: str | None, port: int | None
+) -> None:
+    """Double-fork the dashboard into a background daemon."""
+    pid_file = config.get("dashboard.pid_file", "/var/run/sendq-mta/dashboard.pid")
+    log_file = config.get("dashboard.log_file", "/var/log/sendq-mta/dashboard.log")
+
+    read_fd, write_fd = os.pipe()
+
+    pid = os.fork()
+    if pid > 0:
+        # Parent — wait for grandchild readiness.
+        os.close(write_fd)
+        import select
+        ready, _, _ = select.select([read_fd], [], [], 15)
+        if ready:
+            data = os.read(read_fd, 4096).decode().strip()
+            os.close(read_fd)
+            if data.startswith("OK:"):
+                click.echo(f"Dashboard started (PID {data.split(':',1)[1]})")
+                sys.exit(0)
+            click.echo(f"Failed to start dashboard: {data}", err=True)
+            sys.exit(1)
+        os.close(read_fd)
+        click.echo("Timed out waiting for dashboard to start.", err=True)
+        sys.exit(1)
+
+    # First child
+    os.close(read_fd)
+    os.setsid()
+    os.umask(0o027)
+    os.chdir("/")
+    pid = os.fork()
+    if pid > 0:
+        os.close(write_fd)
+        sys.exit(0)
+
+    # Grandchild — the daemon.
+    sys.stdin.close()
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    log_fd = open(log_file, "a")
+    sys.stdout = log_fd
+    sys.stderr = log_fd
+
+    try:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+        os.write(write_fd, f"OK:{os.getpid()}".encode())
+        os.close(write_fd)
+    except Exception as exc:
+        try:
+            os.write(write_fd, str(exc).encode())
+            os.close(write_fd)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    def _cleanup(*_args):
+        try:
+            if os.path.isfile(pid_file):
+                os.unlink(pid_file)
+        except OSError:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    try:
+        from sendq_dashboard.app import run_dashboard as _run
+        bind = host or config.get("dashboard.bind_address", "0.0.0.0")
+        p = port or int(config.get("dashboard.port", 8443))
+        _run(config, host=bind, port=p)
+    finally:
+        try:
+            if os.path.isfile(pid_file):
+                os.unlink(pid_file)
+        except OSError:
+            pass
+
+
+@dashboard_group.command("start")
+@click.option("--host", "-H", default=None, help="Bind address (default from config).")
+@click.option("--port", "-p", default=None, type=int, help="Port (default from config: 8443).")
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (no daemonize).")
+@click.pass_context
+def dashboard_start(ctx: click.Context, host: str | None, port: int | None,
+                    foreground: bool) -> None:
+    """Start the dashboard as a background daemon.
+
+    Plain HTTP — terminate TLS on a reverse proxy (e.g. nginx) in front of it.
+    """
+    config = _load_config(ctx)
+    _load_dashboard_runner(ctx)  # fail fast if package missing
+
+    existing = _get_dashboard_pid(config)
+    if existing:
+        click.echo(f"Dashboard is already running (PID {existing})", err=True)
+        ctx.exit(1)
         return
+
     bind = host or config.get("dashboard.bind_address", "0.0.0.0")
     p = port or int(config.get("dashboard.port", 8443))
     click.echo(f"Starting dashboard on http://{bind}:{p} (TLS terminates upstream)")
-    _run(config, host=bind, port=p)
+
+    if foreground:
+        pid_file = config.get("dashboard.pid_file", "/var/run/sendq-mta/dashboard.pid")
+        _run_dashboard_blocking(config, host, port, pid_file=pid_file)
+    else:
+        _daemonize_dashboard(config, host, port)
+
+
+@dashboard_group.command("stop")
+@click.pass_context
+def dashboard_stop(ctx: click.Context) -> None:
+    """Stop the running dashboard daemon."""
+    config = _load_config(ctx)
+    pid = _get_dashboard_pid(config)
+    if not pid:
+        click.echo("Dashboard is not running.", err=True)
+        ctx.exit(1)
+        return
+
+    click.echo(f"Stopping dashboard (PID {pid})...")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        click.echo("Dashboard process already gone.")
+        return
+
+    for _ in range(15):
+        try:
+            os.kill(pid, 0)
+            time.sleep(1)
+        except ProcessLookupError:
+            click.echo("Dashboard stopped.")
+            return
+    click.echo("Warning: dashboard did not stop within 15 seconds.", err=True)
+
+
+@dashboard_group.command("restart")
+@click.option("--host", "-H", default=None)
+@click.option("--port", "-p", default=None, type=int)
+@click.pass_context
+def dashboard_restart(ctx: click.Context, host: str | None, port: int | None) -> None:
+    """Restart the dashboard daemon."""
+    config = _load_config(ctx)
+    pid = _get_dashboard_pid(config)
+    if pid:
+        click.echo(f"Stopping dashboard (PID {pid})...")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(15):
+            try:
+                os.kill(pid, 0)
+                time.sleep(1)
+            except ProcessLookupError:
+                break
+    _load_dashboard_runner(ctx)
+    click.echo("Starting dashboard...")
+    _daemonize_dashboard(config, host, port)
+
+
+@dashboard_group.command("status")
+@click.pass_context
+def dashboard_status(ctx: click.Context) -> None:
+    """Show dashboard daemon status."""
+    config = _load_config(ctx)
+    pid = _get_dashboard_pid(config)
+    bind = config.get("dashboard.bind_address", "0.0.0.0")
+    port = config.get("dashboard.port", 8443)
+    click.echo(f"Bind: http://{bind}:{port} (TLS upstream)")
+    click.echo(f"PID file: {config.get('dashboard.pid_file', '?')}")
+    if pid:
+        click.echo(f"Status: RUNNING (PID {pid})")
+    else:
+        click.echo("Status: STOPPED")
+
+
+@dashboard_group.command("run")
+@click.option("--host", "-H", default=None)
+@click.option("--port", "-p", default=None, type=int)
+@click.pass_context
+def dashboard_run(ctx: click.Context, host: str | None, port: int | None) -> None:
+    """Run the dashboard in the foreground (for systemd Type=simple)."""
+    config = _load_config(ctx)
+    _load_dashboard_runner(ctx)
+    pid_file = config.get("dashboard.pid_file", "/var/run/sendq-mta/dashboard.pid")
+    _run_dashboard_blocking(config, host, port, pid_file=pid_file)
 
 
 # ============================================================================
