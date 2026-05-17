@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{ csrf }}">
 <title>SendQ Dashboard</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-<script src="{{ url_for('static', filename='theme-bootstrap.js') }}"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ version }}">
+<script src="{{ url_for('static', filename='theme-bootstrap.js') }}?v={{ version }}"></script>
 </head>
 <body>
 <aside class="sidebar">
@@ -39,6 +39,6 @@
 
 <template id="tpl-empty"><p class="empty">Nothing here yet.</p></template>
 
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
 </body>
 </html>
