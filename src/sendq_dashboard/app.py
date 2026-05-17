@@ -46,6 +46,21 @@ app = Flask(
     static_folder=str(BASE_DIR / "static"),
     static_url_path="/static",
 )
+# Disable Flask's default 12-hour browser cache on static assets — without
+# this, every dashboard upgrade is invisible until the user manually does
+# a hard refresh because their browser keeps using the cached app.js/css.
+# The ``?v=<version>`` query string on each <link>/<script> tag does the
+# real cache-busting on releases; this just makes sure browsers never
+# hold on longer than necessary.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+
+@app.context_processor
+def _inject_version() -> dict[str, str]:
+    """Make ``{{ version }}`` available in every template — used to
+    append ?v=<version> to static asset URLs so browser caches
+    invalidate on each release."""
+    return {"version": __version__}
 
 # ── Globals initialised by ``init_app()`` ─────────────────────────────
 _config: Config | None = None
