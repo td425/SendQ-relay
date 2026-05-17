@@ -13,8 +13,16 @@ let ME = null;
 /* ── Theme toggle ──────────────────────────────────────────────
    The initial data-theme attribute is set by theme-bootstrap.js in
    <head> so the page paints in the right palette without a flash.
-   Here we only wire the toggle button. */
+   Here we only wire the toggle button and update the icon. */
+function _syncThemeIcon() {
+  const icon = document.getElementById('theme-toggle-icon');
+  if (!icon) return;
+  const t = document.documentElement.getAttribute('data-theme') || 'light';
+  // Sun glyph means "currently light, click for dark"; moon means the inverse.
+  icon.textContent = (t === 'light') ? '☀' : '☾';
+}
 document.addEventListener('DOMContentLoaded', () => {
+  _syncThemeIcon();
   const btn = document.getElementById('theme-toggle');
   if (!btn) return;
   btn.onclick = () => {
@@ -22,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('sendq_theme', next); } catch {}
+    _syncThemeIcon();
   };
 });
 

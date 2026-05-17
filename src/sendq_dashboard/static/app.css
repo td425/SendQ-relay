@@ -114,6 +114,21 @@ body { display: flex; }
   background: var(--panel);
 }
 .top h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.top-right { display: flex; align-items: center; gap: 12px; }
+.theme-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 32px; height: 32px;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.theme-btn:hover { filter: brightness(1.1); border-color: var(--accent); }
 .srv .pill {
   display: inline-block;
   padding: 4px 10px;

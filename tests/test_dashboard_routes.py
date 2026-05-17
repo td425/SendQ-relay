@@ -237,6 +237,55 @@ def test_totp_enroll_renders_with_no_qr_when_all_backends_fail(app_client, monke
     assert b'alt="TOTP QR"' not in r2.data
 
 
+def test_mta_history_visible_to_dashboard_api(app_client):
+    """End-to-end of the cross-process write/read pipeline.
+
+    The MTA process writes through ``sendq_mta.core.history``; the
+    dashboard reads through its own connection on the same file. This
+    test simulates the MTA side by calling history.record_* directly,
+    then hits the dashboard's /api/messages and confirms the row
+    appears. Regression for the bug where 50 sent messages produced
+    zero rows in the dashboard.
+    """
+    client, app_module, config = app_client
+    import pyotp
+    code = pyotp.TOTP(app_module._portal._users["rootadmin"]["totp_secret"]).now()
+    _login(client, "rootadmin", "very-long-test-pw", totp=code)
+
+    # Point the MTA-side history module at the SAME sqlite file the
+    # dashboard opened. Reset state first so init() actually runs.
+    from sendq_mta.core import history
+    history._conn = None
+    history._path = None
+    sqlite_path = config.get("dashboard.sqlite_path")
+    history.init(sqlite_path)
+
+    history.record_enqueue("mta-roundtrip-1", "alice@example.com",
+                           ["bob@gmail.com"], "10.0.0.1", 2048)
+    history.record_attempt("mta-roundtrip-1", "gmail-smtp-in.l.google.com",
+                           250, "OK", "success")
+    history.record_terminal("mta-roundtrip-1", "delivered", None)
+
+    r = client.get("/api/messages")
+    assert r.status_code == 200
+    msgs = r.get_json()["data"]
+    found = [m for m in msgs if m["msg_id"] == "mta-roundtrip-1"]
+    assert found, f"MTA-written message not visible to dashboard: got {msgs}"
+    assert found[0]["status"] == "delivered"
+    assert found[0]["sender"] == "alice@example.com"
+    assert "bob@gmail.com" in found[0]["recipients"]
+
+    # Drill into the per-message timeline.
+    r2 = client.get("/api/messages/mta-roundtrip-1")
+    assert r2.status_code == 200
+    detail = r2.get_json()["data"]
+    assert len(detail["attempts"]) == 1
+    assert detail["attempts"][0]["outcome"] == "success"
+
+    history._conn = None
+    history._path = None
+
+
 def test_api_status_includes_status_ok_wrapper(app_client):
     """The SPA's Dashboard tile checks ``r.status === 'ok'`` before rendering.
 
