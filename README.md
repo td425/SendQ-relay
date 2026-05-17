@@ -46,36 +46,177 @@ sendq-mta dashboard
 
 ## Web Dashboard
 
-SendQ-MTA ships with a built-in web management dashboard for full control over the mail server.
+SendQ-MTA ships with a separately-versioned web management portal (`sendq_dashboard` package) for full control over the mail server.
 
-```bash
-# Start the dashboard (default: http://0.0.0.0:8225)
-sendq-mta dashboard
-
-# Custom host and port
-sendq-mta dashboard -H 127.0.0.1 -p 9000
-```
-
-Install the dashboard dependency:
+### Install
 
 ```bash
 pip install 'sendq-mta[dashboard]'
 ```
 
-### Dashboard Panels
+This pulls in Flask, pyotp (TOTP), and qrcode. The MTA itself runs fine without the dashboard installed.
 
-- **Dashboard** — Realtime meters showing active, deferred, and failed queue counts; server status; listener overview; feature status chips
-- **Queue** — Browse, filter, and delete queued messages across active/deferred/failed queues; flush entire queue; purge failed messages
-- **Users** — Full user CRUD: add, edit, delete users; change passwords; set quotas and send limits; enable/disable accounts
-- **Domains** — Manage local, relay, and blocked domains
-- **Relay & Failover** — Configure primary SMTP relay settings (host, port, TLS, auth); add/edit/remove failover relays; test relay connectivity; toggle relay on/off
-- **Configuration** — Section-by-section config editor with auto-generated forms; edit any config key; changes auto-saved and hot-reloaded
-- **Logs** — Realtime log viewer with filtering by level, search text, IP from, IP to, mail from, mail to; sortable ascending/descending; auto-refresh
-- **Health Check** — 9 automated infrastructure checks: server process, listener ports, queue directories, TLS certificate expiry, relay connectivity, DNS resolution, log file writability, config validation, outbound port 25 reachability
+### First-time setup
 
-### Feature Toggles
+```bash
+# 1. Create the first admin (interactive password prompt). No default admin is
+#    auto-created — the dashboard refuses logins until at least one exists.
+sudo sendq-mta portal-user add admin --role admin
 
-Toggle DKIM, SPF, DMARC, and rate limiting on/off directly from the dashboard. Changes take effect immediately via hot-reload.
+# 2. Enable the dashboard service so it boots automatically (recommended).
+sudo systemctl enable --now sendq-dashboard
+# → http://0.0.0.0:8443  (plain HTTP — terminate TLS on your reverse proxy)
+
+# 3. From your browser, log in with the admin credentials you just set.
+#    TOTP is optional by default; enable it later via
+#    `dashboard.require_totp_for_admin: true` once you've installed an
+#    authenticator app (Aegis, 1Password, Authy, etc.).
+```
+
+### Managing the dashboard daemon
+
+The dashboard is a long-running service, controllable either through systemd or directly via the CLI:
+
+```bash
+# systemd (preferred for production)
+sudo systemctl start   sendq-dashboard
+sudo systemctl stop    sendq-dashboard
+sudo systemctl restart sendq-dashboard
+sudo systemctl status  sendq-dashboard
+
+# Equivalent CLI commands (work even on hosts without systemd)
+sudo sendq-mta dashboard start          # daemonize into background
+sudo sendq-mta dashboard stop           # SIGTERM the running daemon
+sudo sendq-mta dashboard restart
+sudo sendq-mta dashboard status
+sudo sendq-mta dashboard start -f       # foreground (no daemonize)
+sudo sendq-mta dashboard run            # foreground (the systemd entry point)
+```
+
+The PID file lives at `/var/run/sendq-mta/dashboard.pid` (configurable via `dashboard.pid_file`). Logs go to `/var/log/sendq-mta/dashboard.log`.
+
+### Deployment model — terminate TLS upstream
+
+The dashboard listens on **plain HTTP** by design. Put a reverse proxy in front of it (commonly an nginx box separate from the MTA host) to terminate TLS:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mta-admin.example.com;
+    ssl_certificate     /etc/letsencrypt/live/mta-admin/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mta-admin/privkey.pem;
+
+    location / {
+        proxy_pass http://<mta-host>:8443;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
+}
+```
+
+Then in the MTA host's `sendq-mta.yml`:
+
+```yaml
+dashboard:
+  bind_address: 0.0.0.0
+  port: 8443
+  cookie_secure: true       # session cookies require HTTPS — flip to false ONLY
+                            # if you intentionally serve the dashboard over HTTP
+                            # (local testing without a TLS proxy in front).
+  trusted_proxies:
+    - 10.0.0.5/32          # the nginx box's IP — only this peer is allowed to
+                            # supply X-Forwarded-* headers (anti-spoofing).
+  admin_ip_allowlist:
+    - 10.0.0.0/24          # admin API routes refuse traffic from any other
+                            # client IP (after X-Forwarded-For resolution).
+  session_timeout_minutes: 30
+  history_retention_days: 30
+  audit_retention_days: 365
+  sqlite_path: /var/lib/sendq-mta/dashboard.db
+```
+
+**Critical**: configure your firewall so port 8443 on the MTA host accepts traffic **only** from the nginx box's IP. With `trusted_proxies` empty, `X-Forwarded-For` is ignored and the dashboard uses the direct peer IP everywhere.
+
+#### Testing over plain HTTP (no nginx in front yet)
+
+If you point your browser directly at `http://<mta-host>:8443` for testing, the login form will appear to do nothing — submitting credentials redirects you back to `/login`. That's because the session cookie is set with the `Secure` attribute, so the browser refuses to send it back over plain HTTP. Two ways to resolve:
+
+```yaml
+# Option A (recommended): put a TLS proxy in front and list its IP in
+# trusted_proxies — production behavior.
+
+# Option B: for local-only HTTP testing, disable the Secure flag.
+dashboard:
+  cookie_secure: false
+```
+
+The dashboard prints a startup warning if it detects this misconfiguration (Secure cookies enabled, no trusted proxies, non-loopback bind).
+
+### Roles
+
+- **Admin** — full CRUD over MTA users, portal users, domains, configuration, DKIM, relay, queue.
+- **User** — read-only. Sees only messages and log lines for the domains assigned to them by an admin. Cannot reach admin API routes (HTTP 403).
+
+### Two-factor authentication (TOTP)
+
+TOTP is **optional by default**. Admins log in with just a password unless you flip:
+
+```yaml
+dashboard:
+  require_totp_for_admin: true
+```
+
+When this is on, an admin without an enrolled TOTP secret is redirected to `/login/totp-enroll` on their next login and can't reach the dashboard until they complete enrollment with an authenticator app. Users with TOTP already enrolled (admin or not) must always supply the code regardless of the flag.
+
+### Portal user CLI
+
+```bash
+sendq-mta portal-user add <name> --role admin
+sendq-mta portal-user add <name> --role user --domain example.com --domain other.com
+sendq-mta portal-user list
+sendq-mta portal-user set-password <name>
+sendq-mta portal-user disable-totp <name>   # lost-phone recovery
+sendq-mta portal-user delete <name>
+```
+
+Portal users live in `/etc/sendq-mta/portal-users.yml` (mode `0600`). They are completely separate from SMTP-AUTH users (`/etc/sendq-mta/users.yml`) — a portal user has no SMTP send rights, and an SMTP user cannot log into the dashboard.
+
+### Dashboard panels
+
+- **Dashboard** — Realtime meters (active / deferred / failed queue), server state, feature chips, listener overview.
+- **Messages** — Indexed, filterable message history with per-message timeline: receive → each delivery attempt (host, SMTP code, response) → final state. Status badges colour-coded green / amber / red / blue / grey.
+- **Raw logs** — Tail of the structured log file with level + substring filtering and 5-second auto-refresh.
+- **Queue** — Browse / delete in-flight queue files.
+- **Domains** — Add/remove local, relay, blocked domains.
+- **DKIM** — Per-domain key listing with DNS TXT record display, key generation, key removal, signing toggle.
+- **MTA users** — SMTP-AUTH user CRUD (unchanged from before).
+- **Portal users** — Dashboard login accounts; assign domains; reset password; disable TOTP; enable/disable.
+- **Relay** — Edit relay host/port/auth/TLS and test connectivity.
+- **Configuration** — Every config key rendered as a labelled form field (text / number / dropdown / checkbox / multitext). Saves trigger an immediate hot-reload via SIGHUP.
+- **Health** — Process, listener, port checks at a glance.
+
+### Storage
+
+| Data | Backend |
+|---|---|
+| Portal users, roles, TOTP, lockout, domain assignments | YAML (`portal-users.yml`, mode 0600) |
+| Message history, delivery attempts, audit log | SQLite (WAL mode) at `/var/lib/sendq-mta/dashboard.db` |
+| MTA config, SMTP users, queue spool, DKIM PEM files | Unchanged — YAML/files |
+
+SQLite handles ~30k msgs/day comfortably with indexes; no separate database service required. The MTA daemon never blocks on the dashboard DB — history events are written from a background thread.
+
+### Security defaults
+
+- Argon2id password hashing (reused from the existing `Authenticator`).
+- Per-account exponential lockout (5 → 1 min, 10 → 5 min, 20 → 1 h, 30 → 24 h); per-IP rolling 5-minute lockout at 30 failed attempts.
+- TOTP/2FA mandatory for admins.
+- Session cookies: `HttpOnly`, `Secure`, `SameSite=Strict`, configurable idle timeout.
+- CSRF token required on every state-changing request.
+- Strict `Content-Security-Policy` with `script-src 'self'`.
+- `Cache-Control: no-store` on every `/api/*` response so edits show up without a hard refresh.
+- IP allowlist on admin-only routes.
+- Audit log of every admin action in `audit_log` table.
 
 ## CLI Reference
 

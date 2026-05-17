@@ -6,10 +6,16 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sendq_mta.core import history
 from sendq_mta.core.config import Config
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 logger = logging.getLogger("sendq-mta.queue")
 
@@ -108,6 +114,12 @@ class QueueManager:
         for d in (self._queue_dir, self._deferred_dir, self._failed_dir):
             Path(d).mkdir(parents=True, exist_ok=True)
 
+        # Open the dashboard history DB if a path is configured. The MTA
+        # writes every message event here so the dashboard tab can show
+        # them — entirely optional, no-op if the path is unset or the
+        # directory isn't writable.
+        history.init(config.get("dashboard.sqlite_path", ""))
+
     async def enqueue(
         self,
         sender: str,
@@ -137,6 +149,13 @@ class QueueManager:
         await self._delivery_queue.put(msg)
 
         logger.info("Enqueued %s from=%s rcpts=%d", msg_id, sender, len(recipients))
+
+        size_bytes = (
+            len(msg.data) if isinstance(msg.data, (bytes, bytearray))
+            else len(msg.data.encode("utf-8"))
+        )
+        history.record_enqueue(msg_id, sender, recipients, peer_ip, size_bytes)
+
         return msg_id
 
     async def _write_to_disk(self, msg: QueueMessage, directory: str) -> None:
@@ -187,6 +206,9 @@ class QueueManager:
             self._stats["failed"],
         )
 
+        history.record_attempt(msg.msg_id, None, None, error[:512], "failed")
+        history.record_terminal(msg.msg_id, "failed", error[:512])
+
     async def _delivery_worker(self, worker_id: int) -> None:
         """Worker coroutine that pulls messages from the queue and delivers."""
         # Import here to avoid circular imports
@@ -235,6 +257,8 @@ class QueueManager:
                     await self._remove_from_disk(msg.msg_id, self._queue_dir)
                     self._stats["delivered"] += 1
                     logger.info("Delivered %s", msg.msg_id)
+                    history.record_attempt(msg.msg_id, None, 250, "Delivered", "success")
+                    history.record_terminal(msg.msg_id, "delivered", None)
                 else:
                     await self._move_to_failed(msg, "Delivery returned failure")
             except Exception as exc:

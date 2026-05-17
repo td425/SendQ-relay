@@ -28,23 +28,26 @@ if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Stop service
-if systemctl is-active --quiet sendq-mta 2>/dev/null; then
-    log "Stopping sendq-mta service..."
-    systemctl stop sendq-mta
-fi
+# Stop services
+for svc in sendq-dashboard sendq-mta; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        log "Stopping ${svc} service..."
+        systemctl stop "$svc"
+    fi
+    if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+        log "Disabling ${svc} service..."
+        systemctl disable "$svc"
+    fi
+done
 
-if systemctl is-enabled --quiet sendq-mta 2>/dev/null; then
-    log "Disabling sendq-mta service..."
-    systemctl disable sendq-mta
-fi
-
-# Remove systemd unit
-if [[ -f /etc/systemd/system/sendq-mta.service ]]; then
-    log "Removing systemd service..."
-    rm -f /etc/systemd/system/sendq-mta.service
-    systemctl daemon-reload
-fi
+# Remove systemd units
+for unit in /etc/systemd/system/sendq-mta.service /etc/systemd/system/sendq-dashboard.service; do
+    if [[ -f "$unit" ]]; then
+        log "Removing $(basename "$unit")..."
+        rm -f "$unit"
+    fi
+done
+systemctl daemon-reload 2>/dev/null || true
 
 # Remove tmpfiles
 rm -f /etc/tmpfiles.d/sendq-mta.conf
