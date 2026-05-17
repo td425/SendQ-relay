@@ -106,7 +106,11 @@ def init_app(config: Config) -> Flask:
 
     _config = config
 
-    # SQLite + history hooks
+    # Open the shared SQLite DB. The MTA process writes message_history,
+    # message_recipients, and delivery_attempts directly into the same
+    # file (via sendq_mta.core.history). Both packages declare the
+    # schema with IF NOT EXISTS, so it doesn't matter which side gets
+    # there first. The dashboard also owns the audit_log table.
     sqlite_path = config.get("dashboard.sqlite_path", "/var/lib/sendq-mta/dashboard.db")
     db.init(sqlite_path)
     history_writer.install(

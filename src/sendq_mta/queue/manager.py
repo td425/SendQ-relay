@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sendq_mta.core import events as mta_events
+from sendq_mta.core import history
 from sendq_mta.core.config import Config
 
 
@@ -114,6 +114,12 @@ class QueueManager:
         for d in (self._queue_dir, self._deferred_dir, self._failed_dir):
             Path(d).mkdir(parents=True, exist_ok=True)
 
+        # Open the dashboard history DB if a path is configured. The MTA
+        # writes every message event here so the dashboard tab can show
+        # them — entirely optional, no-op if the path is unset or the
+        # directory isn't writable.
+        history.init(config.get("dashboard.sqlite_path", ""))
+
     async def enqueue(
         self,
         sender: str,
@@ -144,17 +150,11 @@ class QueueManager:
 
         logger.info("Enqueued %s from=%s rcpts=%d", msg_id, sender, len(recipients))
 
-        # Notify observers (e.g. dashboard history writer). Never raise on
-        # the SMTP path — hooks default to no-op.
-        try:
-            size_bytes = len(msg.data) if isinstance(msg.data, (bytes, bytearray)) else len(
-                msg.data.encode("utf-8")
-            )
-            mta_events.on_message_enqueued(
-                msg_id, sender, recipients, peer_ip, size_bytes, _iso_now()
-            )
-        except Exception:
-            logger.warning("on_message_enqueued hook failed", exc_info=True)
+        size_bytes = (
+            len(msg.data) if isinstance(msg.data, (bytes, bytearray))
+            else len(msg.data.encode("utf-8"))
+        )
+        history.record_enqueue(msg_id, sender, recipients, peer_ip, size_bytes)
 
         return msg_id
 
@@ -206,14 +206,8 @@ class QueueManager:
             self._stats["failed"],
         )
 
-        ts = _iso_now()
-        try:
-            mta_events.on_delivery_attempt(
-                msg.msg_id, ts, None, None, error[:512], "failed"
-            )
-            mta_events.on_message_terminal(msg.msg_id, "failed", ts, error[:512])
-        except Exception:
-            logger.warning("terminal hook failed", exc_info=True)
+        history.record_attempt(msg.msg_id, None, None, error[:512], "failed")
+        history.record_terminal(msg.msg_id, "failed", error[:512])
 
     async def _delivery_worker(self, worker_id: int) -> None:
         """Worker coroutine that pulls messages from the queue and delivers."""
@@ -263,16 +257,8 @@ class QueueManager:
                     await self._remove_from_disk(msg.msg_id, self._queue_dir)
                     self._stats["delivered"] += 1
                     logger.info("Delivered %s", msg.msg_id)
-                    ts = _iso_now()
-                    try:
-                        mta_events.on_delivery_attempt(
-                            msg.msg_id, ts, None, 250, "Delivered", "success"
-                        )
-                        mta_events.on_message_terminal(
-                            msg.msg_id, "delivered", ts, None
-                        )
-                    except Exception:
-                        logger.warning("delivered hook failed", exc_info=True)
+                    history.record_attempt(msg.msg_id, None, 250, "Delivered", "success")
+                    history.record_terminal(msg.msg_id, "delivered", None)
                 else:
                     await self._move_to_failed(msg, "Delivery returned failure")
             except Exception as exc:

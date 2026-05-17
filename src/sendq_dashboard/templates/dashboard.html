@@ -14,7 +14,6 @@
   <nav id="nav"></nav>
   <div class="userbox">
     <div class="who"><span id="me-name">…</span><span class="role" id="me-role"></span></div>
-    <button type="button" class="link" id="theme-toggle" title="Switch theme">Switch theme</button>
     <form action="/logout" method="post" id="logout-form">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <button type="submit" class="link">Log out</button>
@@ -26,7 +25,12 @@
 <main class="main">
   <header class="top">
     <h1 id="top-title">Dashboard</h1>
-    <div id="server-state" class="srv"></div>
+    <div class="top-right">
+      <div id="server-state" class="srv"></div>
+      <button type="button" id="theme-toggle" class="theme-btn" title="Switch light/dark theme" aria-label="Switch theme">
+        <span id="theme-toggle-icon">☾</span>
+      </button>
+    </div>
   </header>
   <section id="content" class="content"></section>
 </main>
